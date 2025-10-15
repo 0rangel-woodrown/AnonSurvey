@@ -16,9 +16,8 @@
     }
   ],
   "env": {
-    "VITE_SURVEY_CONTRACT_ADDRESS": "@vite_survey_contract_address",
-    "VITE_CHAIN_ID": "@vite_chain_id",
-    "VITE_NETWORK_NAME": "@vite_network_name",
-    "VITE_WALLETCONNECT_PROJECT_ID": "@vite_walletconnect_project_id"
+    "VITE_SURVEY_CONTRACT_ADDRESS": "0x1f90CeE3a8Fab6b2CAe39D25cA4DaaF684836e1B",
+    "VITE_CHAIN_ID": "11155111",
+    "VITE_NETWORK_NAME": "sepolia"
   }
 }

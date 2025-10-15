@@ -33,3 +33,4 @@ coverage.json
 
 # Deployment info
 deployments/
+.vercel
