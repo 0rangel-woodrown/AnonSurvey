@@ -8,9 +8,9 @@
  * 4. Submit to smart contract
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { useAccount, useChainId } from 'wagmi';
+import { useAccount, useChainId, usePublicClient } from 'wagmi';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -19,69 +19,103 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useFHE } from '@/hooks/useFHE';
+import { encryptCompletionTime, encryptMultipleAnswers, encryptQualityScore } from '@/utils/fhe';
 import {
-  encryptCompletionTime,
-  encryptMultipleAnswers,
-  encryptQualityScore,
-  generateQuestionId,
-} from '@/utils/fhe';
-import { useSurveyContract, useSurveyInfo } from '@/hooks/useSurveyContract';
+  useSurveyContract,
+  useSurveyInfo,
+  useSurveyQuestions,
+} from '@/hooks/useSurveyContract';
 import { CONTRACT_CONFIG, QUESTION_TYPE } from '@/contracts/config';
 import { SURVEY_ABI } from '@/contracts/SurveyABI';
 import { encodeAbiParameters } from 'viem';
 
 interface Question {
-  id: string;
-  type: 'Rating' | 'YesNo' | 'MultiChoice' | 'Numeric' | 'Sentiment';
+  id: `0x${string}`;
+  typeId: number;
   text: string;
   minValue: number;
   maxValue: number;
+}
+
+const QUESTION_TYPE_LABELS: Record<number, string> = {
+  [QUESTION_TYPE.RATING]: 'Rating',
+  [QUESTION_TYPE.YES_NO]: 'Yes / No',
+  [QUESTION_TYPE.MULTI_CHOICE]: 'Multiple Choice',
+  [QUESTION_TYPE.NUMERIC]: 'Numeric',
+  [QUESTION_TYPE.SENTIMENT]: 'Sentiment',
+};
+
+function getQuestionTypeLabel(typeId: number) {
+  return QUESTION_TYPE_LABELS[typeId] ?? 'Rating';
 }
 
 export default function TakeSurvey() {
   const { surveyId } = useParams<{ surveyId: string }>();
   const { address } = useAccount();
   const chainId = useChainId();
+  const publicClient = usePublicClient();
   const startTimeRef = useRef<number>(
     typeof performance !== 'undefined' ? performance.now() : Date.now()
   );
+  const surveyIdBigInt = surveyId ? BigInt(surveyId) : undefined;
 
   // FHE Hook
   const { fhe, isInitialized, isLoading: isFheLoading, error: fheError } = useFHE(chainId, !!address);
 
   // Survey information
-  const { surveyInfo, isLoading: isSurveyLoading } = useSurveyInfo(surveyId ? BigInt(surveyId) : undefined);
+  const { surveyInfo, isLoading: isSurveyLoading } = useSurveyInfo(surveyIdBigInt);
+  const { questions: contractQuestions, isLoading: isQuestionsLoading } = useSurveyQuestions(surveyIdBigInt);
 
   // Contract interaction
-  const { isWriting, writeContract } = useSurveyContract();
+  const { isWriting, writeContractAsync } = useSurveyContract();
 
   // State
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // Mock questions (should be loaded from contract)
   const [questions, setQuestions] = useState<Question[]>([]);
 
-  useEffect(() => {
-    // Mock loading questions from contract
-    // Should actually call contract's getQuestions or similar method
-    if (surveyInfo) {
-      const mockQuestions: Question[] = Array.from({ length: Number(surveyInfo[2]) }, (_, i) => ({
-        id: generateQuestionId(`Question ${i + 1}`, i),
-        type: 'Rating',
-        text: `Question ${i + 1}: Please rate this item`,
-        minValue: 0,
-        maxValue: 5
-      }));
-      setQuestions(mockQuestions);
+  const formattedQuestions = useMemo(() => {
+    if (!Array.isArray(contractQuestions)) {
+      return [];
     }
-  }, [surveyInfo]);
+    return contractQuestions.map((q) => ({
+      id: q.questionId,
+      typeId: q.qType,
+      text: q.questionText || 'Survey question',
+      minValue: Number.isFinite(q.minValue) ? q.minValue : 0,
+      maxValue: Number.isFinite(q.maxValue) ? q.maxValue : 5,
+    }));
+  }, [contractQuestions]);
+
+  useEffect(() => {
+    if (!formattedQuestions.length) {
+      setQuestions([]);
+      setAnswers({});
+      return;
+    }
+
+    setQuestions(formattedQuestions);
+    setAnswers((prev) => {
+      const next: Record<string, number> = {};
+      formattedQuestions.forEach((question) => {
+        const prevValue = prev[question.id];
+        if (typeof prevValue === 'number') {
+          next[question.id] = prevValue;
+        } else {
+          next[question.id] = question.minValue;
+        }
+      });
+      return next;
+    });
+  }, [formattedQuestions]);
 
   // Submit answers
   const handleSubmit = async () => {
-    if (!address || !fhe || !surveyId) {
+    if (!address || !fhe || !surveyIdBigInt) {
       return;
     }
     if (!CONTRACT_CONFIG.SURVEY_ADDRESS) {
@@ -104,7 +138,7 @@ export default function TakeSurvey() {
 
       // 1. Prepare answer array
       const answerValues = questions.map(q => answers[q.id]);
-      const questionIds = questions.map(q => q.id as `0x${string}`);
+      const questionIds = questions.map(q => q.id);
 
       console.log('[TakeSurvey] Answers:', answerValues);
 
@@ -159,18 +193,16 @@ export default function TakeSurvey() {
       // 5. Call contract
       console.log('[TakeSurvey] Calling smart contract...');
 
-      // Actual contract call
-      if (!writeContract) {
-        throw new Error('Contract not available');
+      if (!writeContractAsync) {
+        throw new Error('Contract write function not available');
       }
 
-      // Call submitResponse function
-      const tx = await writeContract({
+      const txHash = await writeContractAsync({
         address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
         abi: SURVEY_ABI,
         functionName: 'submitResponse',
         args: [
-          BigInt(surveyId),
+          surveyIdBigInt,
           questionIds,
           encryptedAnswers,
           qualityScoreCipher,
@@ -178,12 +210,11 @@ export default function TakeSurvey() {
         ],
       });
 
-      console.log('[TakeSurvey] Transaction submitted:', tx);
+      console.log('[TakeSurvey] Transaction submitted:', txHash);
+      setIsConfirming(true);
       
       // Wait for transaction confirmation
-      if (tx && typeof tx.wait === 'function') {
-        await tx.wait();
-      }
+      await publicClient.waitForTransactionReceipt({ hash: txHash });
 
       console.log('[TakeSurvey] ✅ Submission successful');
       setSubmitSuccess(true);
@@ -192,6 +223,7 @@ export default function TakeSurvey() {
       console.error('[TakeSurvey] ❌ Submission failed:', error);
       setSubmitError(error.message || 'Submission failed, please try again');
     } finally {
+      setIsConfirming(false);
       setIsSubmitting(false);
     }
   };
@@ -199,14 +231,48 @@ export default function TakeSurvey() {
   // Render questions
   const renderQuestion = (question: Question) => {
     const value = answers[question.id] ?? question.minValue;
+    const typeLabel = getQuestionTypeLabel(question.typeId);
 
-    if (question.type === 'Rating') {
+    if (question.typeId === QUESTION_TYPE.YES_NO) {
+      return (
+        <Card key={question.id} className="mb-4">
+          <CardHeader>
+            <CardTitle className="text-lg">{question.text}</CardTitle>
+            <CardDescription>{typeLabel}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <RadioGroup
+              value={value.toString()}
+              onValueChange={(newValue) =>
+                setAnswers(prev => ({ ...prev, [question.id]: parseInt(newValue, 10) }))
+              }
+            >
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="1" id={`${question.id}-yes`} />
+                <Label htmlFor={`${question.id}-yes`}>Yes</Label>
+              </div>
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="0" id={`${question.id}-no`} />
+                <Label htmlFor={`${question.id}-no`}>No</Label>
+              </div>
+            </RadioGroup>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    if (
+      question.typeId === QUESTION_TYPE.RATING ||
+      question.typeId === QUESTION_TYPE.MULTI_CHOICE ||
+      question.typeId === QUESTION_TYPE.NUMERIC ||
+      question.typeId === QUESTION_TYPE.SENTIMENT
+    ) {
       return (
         <Card key={question.id} className="mb-4">
           <CardHeader>
             <CardTitle className="text-lg">{question.text}</CardTitle>
             <CardDescription>
-              Rating range: {question.minValue} - {question.maxValue}
+              {typeLabel} · Range: {question.minValue} - {question.maxValue}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -228,43 +294,33 @@ export default function TakeSurvey() {
       );
     }
 
-    if (question.type === 'YesNo') {
-      return (
-        <Card key={question.id} className="mb-4">
-          <CardHeader>
-            <CardTitle className="text-lg">{question.text}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <RadioGroup
-              value={value.toString()}
-              onValueChange={(newValue) => setAnswers(prev => ({ ...prev, [question.id]: parseInt(newValue) }))}
-            >
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="1" id={`${question.id}-yes`} />
-                <Label htmlFor={`${question.id}-yes`}>Yes</Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="0" id={`${question.id}-no`} />
-                <Label htmlFor={`${question.id}-no`}>No</Label>
-              </div>
-            </RadioGroup>
-          </CardContent>
-        </Card>
-      );
-    }
-
-    return null;
+    return (
+      <Card key={question.id} className="mb-4">
+        <CardHeader>
+          <CardTitle className="text-lg">{question.text}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Unsupported question type. Please update the frontend to handle type ID {question.typeId}.
+          </p>
+        </CardContent>
+      </Card>
+    );
   };
 
   // Loading state
-  if (isSurveyLoading || isFheLoading) {
+  if (isSurveyLoading || isFheLoading || isQuestionsLoading) {
     return (
       <div className="container mx-auto p-6">
         <div className="flex items-center justify-center min-h-[400px]">
           <div className="text-center">
             <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
             <p className="text-muted-foreground">
-              {isSurveyLoading ? 'Loading survey...' : 'Initializing encryption system...'}
+              {isSurveyLoading
+                ? 'Loading survey metadata...'
+                : isQuestionsLoading
+                  ? 'Loading survey questions from contract...'
+                  : 'Initializing encryption system...'}
             </p>
           </div>
         </div>
@@ -331,7 +387,16 @@ export default function TakeSurvey() {
 
       {/* Question List */}
       <div className="space-y-4 mb-6">
-        {questions.map(renderQuestion)}
+        {questions.length > 0 ? (
+          questions.map(renderQuestion)
+        ) : (
+          <Alert>
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              No questions found for this survey. Please check if the survey is configured correctly.
+            </AlertDescription>
+          </Alert>
+        )}
       </div>
 
       {/* Error Message */}
@@ -347,14 +412,14 @@ export default function TakeSurvey() {
         <CardContent className="pt-6">
           <Button
             onClick={handleSubmit}
-            disabled={isSubmitting || isWriting || questions.length === 0}
+            disabled={isSubmitting || isWriting || isConfirming || questions.length === 0}
             className="w-full"
             size="lg"
           >
-            {isSubmitting ? (
+            {isSubmitting || isConfirming ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Encrypting and submitting...
+                {isConfirming ? 'Waiting for confirmation...' : 'Encrypting and submitting...'}
               </>
             ) : (
               'Submit Answers'

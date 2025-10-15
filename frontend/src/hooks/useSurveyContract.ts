@@ -1,11 +1,22 @@
-import { useWriteContract, useReadContract, useWatchContractEvent } from 'wagmi';
+import {
+  useWriteContract,
+  useReadContract,
+  useWatchContractEvent,
+} from 'wagmi';
 import { SURVEY_ABI } from '../contracts/SurveyABI';
 import { CONTRACT_CONFIG } from '../contracts/config';
 import { useToast } from './use-toast';
 
 export function useSurveyContract() {
   const { toast } = useToast();
-  const { writeContract, isPending: isWriting, data: txHash, isSuccess } = useWriteContract();
+  const {
+    writeContract,
+    writeContractAsync,
+    isPending: isWriting,
+    data: txHash,
+    isSuccess,
+  } = useWriteContract();
+  const contractAddress = CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`;
 
   // Simplified Create Survey (matches SurveySimple.sol)
   const createSurvey = async (
@@ -18,8 +29,8 @@ export function useSurveyContract() {
     requireVerification: boolean
   ): Promise<{ surveyId?: number; txHash?: string }> => {
     try {
-      const result = await writeContract({
-        address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
+      const result = await writeContractAsync({
+        address: contractAddress,
         abi: SURVEY_ABI,
         functionName: 'createSurvey',
         args: [
@@ -54,8 +65,8 @@ export function useSurveyContract() {
     questionText: string
   ) => {
     try {
-      await writeContract({
-        address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
+      await writeContractAsync({
+        address: contractAddress,
         abi: SURVEY_ABI,
         functionName: 'addQuestion',
         args: [surveyId, questionId as `0x${string}`, qType, minValue, maxValue, questionText],
@@ -78,8 +89,8 @@ export function useSurveyContract() {
   // Activate Survey
   const activateSurvey = async (surveyId: bigint) => {
     try {
-      await writeContract({
-        address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
+      await writeContractAsync({
+        address: contractAddress,
         abi: SURVEY_ABI,
         functionName: 'activateSurvey',
         args: [surveyId],
@@ -102,8 +113,8 @@ export function useSurveyContract() {
   // Close Survey
   const closeSurvey = async (surveyId: bigint) => {
     try {
-      await writeContract({
-        address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
+      await writeContractAsync({
+        address: contractAddress,
         abi: SURVEY_ABI,
         functionName: 'closeSurvey',
         args: [surveyId],
@@ -130,6 +141,7 @@ export function useSurveyContract() {
     closeSurvey,
     isWriting,
     writeContract,
+    writeContractAsync,
   };
 }
 
@@ -164,4 +176,41 @@ export function useWatchSurveyEvents(
     eventName,
     onLogs: onEvent,
   });
+}
+
+export interface ContractQuestion {
+  questionId: `0x${string}`;
+  qType: number;
+  maxValue: number;
+  minValue: number;
+  questionText: string;
+}
+
+export function useSurveyQuestions(surveyId: bigint | undefined) {
+  const { data, isLoading, error, refetch } = useReadContract({
+    address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
+    abi: SURVEY_ABI,
+    functionName: 'getSurveyQuestions',
+    args: surveyId !== undefined ? [surveyId] : undefined,
+    query: {
+      enabled: surveyId !== undefined && CONTRACT_CONFIG.SURVEY_ADDRESS !== '',
+    },
+  });
+
+  const questions: ContractQuestion[] = Array.isArray(data)
+    ? data.map((q: any) => ({
+        questionId: q.questionId as `0x${string}`,
+        qType: Number(q.qType ?? 0),
+        maxValue: Number(q.maxValue ?? 0),
+        minValue: Number(q.minValue ?? 0),
+        questionText: q.questionText ?? '',
+      }))
+    : [];
+
+  return {
+    questions,
+    isLoading,
+    error,
+    refetch,
+  };
 }
