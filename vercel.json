@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "frontend/dist"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "frontend/dist/$1"
+    }
+  ],
+  "env": {
+    "VITE_SURVEY_CONTRACT_ADDRESS": "@vite_survey_contract_address",
+    "VITE_CHAIN_ID": "@vite_chain_id",
+    "VITE_NETWORK_NAME": "@vite_network_name",
+    "VITE_WALLETCONNECT_PROJECT_ID": "@vite_walletconnect_project_id"
+  }
+}
