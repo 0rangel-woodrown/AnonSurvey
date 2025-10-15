@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Build outputs
+dist/
+frontend/dist/
+artifacts/
+cache/
+typechain-types/
+
+# Environment variables
+.env
+.env.local
+frontend/.env
+frontend/.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Hardhat
+coverage/
+coverage.json
+*.log
+
+# Deployment info
+deployments/
