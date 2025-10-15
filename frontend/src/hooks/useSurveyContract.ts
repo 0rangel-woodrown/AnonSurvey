@@ -18,15 +18,16 @@ export function useSurveyContract() {
   } = useWriteContract();
   const contractAddress = CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`;
 
-  // Simplified Create Survey (matches SurveySimple.sol)
+  // Create Survey function (matches Survey.sol)
   const createSurvey = async (
+    surveyId: bigint,
     title: string,
     description: string,
-    category: number, // SurveyCategory enum (0-6)
-    incentiveType: number, // IncentiveType enum (0-5)
+    numQuestions: number,
     duration: bigint, // Duration in seconds
-    targetResponses: bigint,
-    requireVerification: boolean
+    targetParticipants: bigint,
+    minAge: number,
+    requiresVerification: boolean
   ): Promise<{ surveyId?: number; txHash?: string }> => {
     try {
       const result = await writeContractAsync({
@@ -34,17 +35,18 @@ export function useSurveyContract() {
         abi: SURVEY_ABI,
         functionName: 'createSurvey',
         args: [
+          surveyId,
           title,
           description,
-          category,
-          incentiveType,
+          numQuestions,
           duration,
-          targetResponses,
-          requireVerification,
+          targetParticipants,
+          minAge,
+          requiresVerification,
         ],
       });
 
-      return { txHash: result };
+      return { surveyId: Number(surveyId), txHash: result };
     } catch (error: any) {
       toast({
         title: 'Error',
@@ -65,7 +67,7 @@ export function useSurveyContract() {
     questionText: string
   ) => {
     try {
-      await writeContractAsync({
+      const result = await writeContractAsync({
         address: contractAddress,
         abi: SURVEY_ABI,
         functionName: 'addQuestion',
@@ -76,6 +78,7 @@ export function useSurveyContract() {
         title: 'Question Added',
         description: 'Question has been added to the survey.',
       });
+      return result;
     } catch (error: any) {
       toast({
         title: 'Error',
@@ -89,7 +92,7 @@ export function useSurveyContract() {
   // Activate Survey
   const activateSurvey = async (surveyId: bigint) => {
     try {
-      await writeContractAsync({
+      const result = await writeContractAsync({
         address: contractAddress,
         abi: SURVEY_ABI,
         functionName: 'activateSurvey',
@@ -100,6 +103,7 @@ export function useSurveyContract() {
         title: 'Survey Activated',
         description: 'Survey is now active and accepting responses.',
       });
+      return result;
     } catch (error: any) {
       toast({
         title: 'Error',

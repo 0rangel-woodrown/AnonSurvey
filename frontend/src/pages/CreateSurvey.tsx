@@ -27,7 +27,7 @@ interface Question {
 const CreateSurvey = () => {
   const { toast } = useToast();
   const { address, isConnected } = useAccount();
-  const { isWriting, writeContract } = useSurveyContract();
+  const { isWriting, writeContractAsync } = useSurveyContract();
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -101,7 +101,7 @@ const CreateSurvey = () => {
       const targetResponsesBigInt = BigInt(parseInt(targetResponses));
 
       // Call the contract directly with correct parameters
-      if (!writeContract) {
+      if (!writeContractAsync) {
         throw new Error('Contract not available');
       }
 
@@ -115,7 +115,7 @@ const CreateSurvey = () => {
       });
 
       // Call createSurvey with correct parameters
-      const tx = await writeContract({
+      const txHash = await writeContractAsync({
         address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
         abi: SURVEY_ABI,
         functionName: 'createSurvey',
@@ -131,18 +131,14 @@ const CreateSurvey = () => {
         ],
       });
 
-      console.log('Survey creation transaction:', tx);
-      
-      // Wait for transaction confirmation
-      if (tx && typeof tx.wait === 'function') {
-        await tx.wait();
-      }
+      console.log('Survey creation transaction hash:', txHash);
       
       // Add questions to the survey
       for (let i = 0; i < questions.length; i++) {
-        const questionId = `0x${Math.random().toString(16).substr(2, 64)}`;
+        // Generate a proper 32-byte (64 hex chars) questionId
+        const questionId = `0x${Array.from({length: 64}, () => Math.floor(Math.random() * 16).toString(16)).join('')}`;
         
-        const questionTx = await writeContract({
+        const questionTxHash = await writeContractAsync({
           address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
           abi: SURVEY_ABI,
           functionName: 'addQuestion',
@@ -156,22 +152,18 @@ const CreateSurvey = () => {
           ],
         });
         
-        if (questionTx && typeof questionTx.wait === 'function') {
-          await questionTx.wait();
-        }
+        console.log(`Question ${i + 1} added, tx hash:`, questionTxHash);
       }
 
       // Activate the survey
-      const activateTx = await writeContract({
+      const activateTxHash = await writeContractAsync({
         address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
         abi: SURVEY_ABI,
         functionName: 'activateSurvey',
         args: [surveyId],
       });
       
-      if (activateTx && typeof activateTx.wait === 'function') {
-        await activateTx.wait();
-      }
+      console.log('Survey activated, tx hash:', activateTxHash);
 
       setCreatedSurveyId(Number(surveyId));
       setShowShareModal(true);
@@ -193,7 +185,8 @@ const CreateSurvey = () => {
 
   const getShareUrl = () => {
     if (createdSurveyId === null) return '';
-    return `${window.location.origin}/survey/${createdSurveyId}`;
+    // Use the production domain for sharing
+    return `https://anon-survey.vercel.app/survey/${createdSurveyId}`;
   };
 
   const copyShareUrl = () => {
