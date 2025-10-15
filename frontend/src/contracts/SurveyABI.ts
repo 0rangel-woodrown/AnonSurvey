@@ -78,7 +78,7 @@ export const SURVEY_ABI = [
     "anonymous": false,
     "inputs": [
       {
-        "indexed": false,
+        "indexed": true,
         "internalType": "address",
         "name": "newAnalyst",
         "type": "address"
@@ -254,7 +254,7 @@ export const SURVEY_ABI = [
     "anonymous": false,
     "inputs": [
       {
-        "indexed": false,
+        "indexed": true,
         "internalType": "address",
         "name": "newManager",
         "type": "address"
@@ -501,6 +501,148 @@ export const SURVEY_ABI = [
   {
     "inputs": [
       {
+        "internalType": "uint256",
+        "name": "surveyId",
+        "type": "uint256"
+      }
+    ],
+    "name": "getMySurveyResults",
+    "outputs": [
+      {
+        "internalType": "string",
+        "name": "title",
+        "type": "string"
+      },
+      {
+        "internalType": "uint32",
+        "name": "participantCount",
+        "type": "uint32"
+      },
+      {
+        "internalType": "uint32",
+        "name": "targetParticipants",
+        "type": "uint32"
+      },
+      {
+        "internalType": "enum Survey.SurveyStatus",
+        "name": "status",
+        "type": "uint8"
+      },
+      {
+        "components": [
+          {
+            "internalType": "bytes32",
+            "name": "questionId",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "enum Survey.QuestionType",
+            "name": "qType",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "maxValue",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "minValue",
+            "type": "uint8"
+          },
+          {
+            "internalType": "string",
+            "name": "questionText",
+            "type": "string"
+          }
+        ],
+        "internalType": "struct Survey.Question[]",
+        "name": "questions",
+        "type": "tuple[]"
+      },
+      {
+        "components": [
+          {
+            "internalType": "bytes32",
+            "name": "questionId",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "euint32",
+            "name": "totalScoreCipher",
+            "type": "uint256"
+          },
+          {
+            "internalType": "euint32",
+            "name": "sumOfSquaresCipher",
+            "type": "uint256"
+          },
+          {
+            "internalType": "euint16",
+            "name": "minResponseCipher",
+            "type": "uint256"
+          },
+          {
+            "internalType": "euint16",
+            "name": "maxResponseCipher",
+            "type": "uint256"
+          },
+          {
+            "internalType": "euint32",
+            "name": "varianceCipher",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint32",
+            "name": "responseCount",
+            "type": "uint32"
+          },
+          {
+            "internalType": "uint32",
+            "name": "decryptedAverage",
+            "type": "uint32"
+          },
+          {
+            "internalType": "uint32",
+            "name": "decryptedVariance",
+            "type": "uint32"
+          },
+          {
+            "internalType": "bool",
+            "name": "decrypted",
+            "type": "bool"
+          }
+        ],
+        "internalType": "struct Survey.QuestionStatistics[]",
+        "name": "statistics",
+        "type": "tuple[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "surveyId",
+        "type": "uint256"
+      }
+    ],
+    "name": "getParticipantCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "address",
         "name": "participant",
         "type": "address"
@@ -526,25 +668,6 @@ export const SURVEY_ABI = [
       {
         "internalType": "uint256",
         "name": "lastSurveyAt",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "surveyId",
-        "type": "uint256"
-      }
-    ],
-    "name": "getParticipantCount",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
         "type": "uint256"
       }
     ],
@@ -669,6 +792,52 @@ export const SURVEY_ABI = [
         "internalType": "uint256",
         "name": "surveyId",
         "type": "uint256"
+      }
+    ],
+    "name": "getSurveyQuestions",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "bytes32",
+            "name": "questionId",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "enum Survey.QuestionType",
+            "name": "qType",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "maxValue",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "minValue",
+            "type": "uint8"
+          },
+          {
+            "internalType": "string",
+            "name": "questionText",
+            "type": "string"
+          }
+        ],
+        "internalType": "struct Survey.Question[]",
+        "name": "",
+        "type": "tuple[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "surveyId",
+        "type": "uint256"
       },
       {
         "internalType": "address",
@@ -763,55 +932,19 @@ export const SURVEY_ABI = [
         "type": "bytes32[]"
       },
       {
-        "components": [
-          {
-            "internalType": "bytes",
-            "name": "data",
-            "type": "bytes"
-          }
-        ],
-        "internalType": "struct externalEuint16[]",
-        "name": "encryptedAnswers",
-        "type": "tuple[]"
-      },
-      {
         "internalType": "bytes[]",
-        "name": "answerProofs",
+        "name": "encryptedAnswers",
         "type": "bytes[]"
       },
       {
-        "components": [
-          {
-            "internalType": "bytes",
-            "name": "data",
-            "type": "bytes"
-          }
-        ],
-        "internalType": "struct externalEuint16",
-        "name": "qualityScoreExt",
-        "type": "tuple"
+        "internalType": "euint16",
+        "name": "qualityScore",
+        "type": "uint256"
       },
       {
-        "internalType": "bytes",
-        "name": "qualityScoreProof",
-        "type": "bytes"
-      },
-      {
-        "components": [
-          {
-            "internalType": "bytes",
-            "name": "data",
-            "type": "bytes"
-          }
-        ],
-        "internalType": "struct externalEuint8",
-        "name": "completionTimeExt",
-        "type": "tuple"
-      },
-      {
-        "internalType": "bytes",
-        "name": "completionTimeProof",
-        "type": "bytes"
+        "internalType": "euint8",
+        "name": "completionTime",
+        "type": "uint256"
       }
     ],
     "name": "submitResponse",

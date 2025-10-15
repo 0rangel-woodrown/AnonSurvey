@@ -8,7 +8,7 @@
  * 4. Submit to smart contract
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAccount, useChainId } from 'wagmi';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -19,10 +19,16 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useFHE } from '@/hooks/useFHE';
-import { encryptMultipleAnswers, generateQuestionId } from '@/utils/fhe';
+import {
+  encryptCompletionTime,
+  encryptMultipleAnswers,
+  encryptQualityScore,
+  generateQuestionId,
+} from '@/utils/fhe';
 import { useSurveyContract, useSurveyInfo } from '@/hooks/useSurveyContract';
 import { CONTRACT_CONFIG, QUESTION_TYPE } from '@/contracts/config';
 import { SURVEY_ABI } from '@/contracts/SurveyABI';
+import { encodeAbiParameters } from 'viem';
 
 interface Question {
   id: string;
@@ -36,9 +42,12 @@ export default function TakeSurvey() {
   const { surveyId } = useParams<{ surveyId: string }>();
   const { address } = useAccount();
   const chainId = useChainId();
+  const startTimeRef = useRef<number>(
+    typeof performance !== 'undefined' ? performance.now() : Date.now()
+  );
 
   // FHE Hook
-  const { fhe, isInitialized, isLoading: isFheLoading, error: fheError, status } = useFHE(chainId, !!address);
+  const { fhe, isInitialized, isLoading: isFheLoading, error: fheError } = useFHE(chainId, !!address);
 
   // Survey information
   const { surveyInfo, isLoading: isSurveyLoading } = useSurveyInfo(surveyId ? BigInt(surveyId) : undefined);
@@ -75,6 +84,10 @@ export default function TakeSurvey() {
     if (!address || !fhe || !surveyId) {
       return;
     }
+    if (!CONTRACT_CONFIG.SURVEY_ADDRESS) {
+      setSubmitError('Survey contract address is not configured.');
+      return;
+    }
 
     // Validate all questions are answered
     const unansweredQuestions = questions.filter(q => answers[q.id] === undefined);
@@ -91,13 +104,13 @@ export default function TakeSurvey() {
 
       // 1. Prepare answer array
       const answerValues = questions.map(q => answers[q.id]);
-      const questionIds = questions.map(q => q.id);
+      const questionIds = questions.map(q => q.id as `0x${string}`);
 
       console.log('[TakeSurvey] Answers:', answerValues);
 
       // 2. Encrypt all answers
       console.log('[TakeSurvey] Encrypting answers with FHE...');
-      const { handles, proof } = await encryptMultipleAnswers(
+      const { handles } = await encryptMultipleAnswers(
         answerValues,
         CONTRACT_CONFIG.SURVEY_ADDRESS,
         address
@@ -105,19 +118,43 @@ export default function TakeSurvey() {
 
       console.log('[TakeSurvey] Encryption successful');
       console.log('[TakeSurvey] Handles:', handles.length);
-      console.log('[TakeSurvey] Proof length:', proof.length);
 
-      // 3. Prepare additional encrypted data (quality score and completion time)
-      // Simplified handling, should actually encrypt separately
-      const qualityScoreHandle = handles[0]; // Simplified: use first handle
-      const completionTimeHandle = handles[0]; // Simplified: use first handle
+      // 3. Convert to contract required format (bytes[] with abi-encoded uint256)
+      const encryptedAnswers = handles.map(handle =>
+        encodeAbiParameters([{ type: 'uint256' }], [BigInt(handle)])
+      );
 
-      // 4. Convert to contract required format
-      const encryptedAnswers = handles.map(h => ({
-        data: h
-      }));
+      // 4. Encrypt quality score & completion time separately
+      const averageScore =
+        answerValues.reduce((acc, value) => acc + value, 0) / Math.max(answerValues.length, 1);
+      const qualityScoreValue = Math.min(65535, Math.max(0, Math.round(averageScore * 100)));
+      const completedAt =
+        typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const elapsedSeconds = Math.min(
+        255,
+        Math.max(
+          1,
+          Math.round(
+            (completedAt - (startTimeRef.current ?? completedAt)) /
+              (typeof performance !== 'undefined' ? 1000 : 1000)
+          )
+        )
+      );
 
-      const answerProofs = handles.map(() => proof); // All answers share one proof
+      const { handle: qualityScoreHandle } = await encryptQualityScore(
+        qualityScoreValue,
+        CONTRACT_CONFIG.SURVEY_ADDRESS,
+        address
+      );
+
+      const { handle: completionTimeHandle } = await encryptCompletionTime(
+        elapsedSeconds,
+        CONTRACT_CONFIG.SURVEY_ADDRESS,
+        address
+      );
+
+      const qualityScoreCipher = BigInt(qualityScoreHandle);
+      const completionTimeCipher = BigInt(completionTimeHandle);
 
       // 5. Call contract
       console.log('[TakeSurvey] Calling smart contract...');
@@ -135,9 +172,9 @@ export default function TakeSurvey() {
         args: [
           BigInt(surveyId),
           questionIds,
-          handles, // Direct use of handles array
-          qualityScoreHandle, // Quality score
-          completionTimeHandle // Completion time
+          encryptedAnswers,
+          qualityScoreCipher,
+          completionTimeCipher
         ],
       });
 
