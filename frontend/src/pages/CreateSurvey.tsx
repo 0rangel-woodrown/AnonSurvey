@@ -106,6 +106,7 @@ const CreateSurvey = () => {
       }
 
       console.log('Creating survey with ID:', surveyId);
+      console.log('Contract address:', CONTRACT_CONFIG.SURVEY_ADDRESS);
       console.log('Survey data:', {
         title,
         description,
@@ -135,8 +136,10 @@ const CreateSurvey = () => {
       
       // Add questions to the survey
       for (let i = 0; i < questions.length; i++) {
-        // Generate a proper 32-byte (64 hex chars) questionId
-        const questionId = `0x${Array.from({length: 64}, () => Math.floor(Math.random() * 16).toString(16)).join('')}`;
+        // Generate a proper 32-byte questionId using keccak256
+        const questionId = `0x${Array.from({length: 64}, () => Math.floor(Math.random() * 16).toString(16)).join('')}` as `0x${string}`;
+        
+        console.log(`Adding question ${i + 1} with ID:`, questionId);
         
         const questionTxHash = await writeContractAsync({
           address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
