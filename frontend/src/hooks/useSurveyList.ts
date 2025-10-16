@@ -34,14 +34,7 @@ export function useSurveyList(): UseSurveyListResult {
   const contractAddress = useMemo(() => {
     const address = CONTRACT_CONFIG.SURVEY_ADDRESS;
     console.log('useSurveyList contractAddress:', address);
-    
-    // Validate address format
-    if (address && address.startsWith('0x') && address.length === 42) {
-      return address as `0x${string}`;
-    }
-    
-    console.error('Invalid contract address format:', address);
-    return null;
+    return address as `0x${string}`;
   }, []);
 
   const [surveys, setSurveys] = useState<SurveyListItem[]>([]);
