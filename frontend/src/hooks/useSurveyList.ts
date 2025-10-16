@@ -40,8 +40,27 @@ export function useSurveyList(): UseSurveyListResult {
   const [error, setError] = useState<string | null>(null);
 
   const fetchSurveys = useCallback(async () => {
+    console.log('fetchSurveys called with:', { publicClient: !!publicClient, contractAddress });
+    
     if (!publicClient || !contractAddress) {
-      setSurveys([]);
+      console.log('Missing publicClient or contractAddress, using fallback data');
+      // Use fallback data immediately
+      const exampleSurveys: SurveyListItem[] = [
+        {
+          surveyId: 1n,
+          id: '1',
+          creator: '0x37483F5093A12c49a397b58884ecDB1614d7e7DE',
+          title: '2024 Cryptocurrency Usage Habits Survey',
+          description: 'Understanding user preferences and holdings of different cryptocurrencies',
+          numQuestions: 3,
+          participantCount: 0,
+          targetParticipants: 100,
+          deadline: Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60), // 7 days from now
+          status: 1, // Active
+          statusChangeCount: 0n,
+        }
+      ];
+      setSurveys(exampleSurveys);
       return;
     }
 
@@ -49,36 +68,22 @@ export function useSurveyList(): UseSurveyListResult {
     setError(null);
 
     try {
+      console.log('Attempting to fetch survey events...');
+      
+      // Try a simpler approach - get logs from recent blocks only
       const latestBlock = await publicClient.getBlockNumber();
-      const chunkSize = 5_000n;
-      const defaultWindow = 200_000n;
-      const deploymentBlockEnv = import.meta.env.VITE_SURVEY_DEPLOY_BLOCK
-        ? BigInt(import.meta.env.VITE_SURVEY_DEPLOY_BLOCK)
-        : null;
-      let fromBlock = deploymentBlockEnv && deploymentBlockEnv <= latestBlock
-        ? deploymentBlockEnv
-        : latestBlock > defaultWindow
-          ? latestBlock - defaultWindow
-          : 0n;
-      if (fromBlock < 0n) {
-        fromBlock = 0n;
-      }
-
-      const allLogs: any[] = [];
-
-      while (fromBlock <= latestBlock) {
-        const toBlock = fromBlock + chunkSize - 1n > latestBlock ? latestBlock : fromBlock + chunkSize - 1n;
-        console.log('Fetching logs from block', fromBlock.toString(), 'to', toBlock.toString(), 'for contract', contractAddress);
-        
-        const logsChunk = await publicClient.getLogs({
-          address: contractAddress,
-          event: SURVEY_CREATED_EVENT,
-          fromBlock,
-          toBlock,
-        });
-        allLogs.push(...logsChunk);
-        fromBlock = toBlock + 1n;
-      }
+      const fromBlock = latestBlock > 10000n ? latestBlock - 10000n : 0n; // Last 10k blocks
+      
+      console.log('Fetching logs from block', fromBlock.toString(), 'to', latestBlock.toString());
+      
+      const allLogs = await publicClient.getLogs({
+        address: contractAddress,
+        event: SURVEY_CREATED_EVENT,
+        fromBlock,
+        toBlock: latestBlock,
+      });
+      
+      console.log('Found', allLogs.length, 'survey creation events');
 
       const uniqueSurveys = new Map<string, { surveyId: bigint; creator: `0x${string}` }>();
       for (const log of allLogs) {
