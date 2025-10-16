@@ -96,6 +96,8 @@ const CreateSurvey = () => {
       // Generate a unique survey ID (using timestamp + random)
       const surveyId = BigInt(Date.now() + Math.floor(Math.random() * 1000));
       
+      console.log('Generated surveyId:', surveyId.toString());
+      
       // Convert days to seconds
       const durationSeconds = BigInt(parseInt(duration) * 24 * 60 * 60);
       const targetResponsesBigInt = BigInt(parseInt(targetResponses));
@@ -136,8 +138,8 @@ const CreateSurvey = () => {
       
       // Add questions to the survey
       for (let i = 0; i < questions.length; i++) {
-        // Generate a proper 32-byte questionId using keccak256
-        const questionId = `0x${Array.from({length: 64}, () => Math.floor(Math.random() * 16).toString(16)).join('')}` as `0x${string}`;
+        // Generate a proper 32-byte questionId using crypto.randomBytes
+        const questionId = `0x${crypto.getRandomValues(new Uint8Array(32)).map(b => b.toString(16).padStart(2, '0')).join('')}` as `0x${string}`;
         
         console.log(`Adding question ${i + 1} with ID:`, questionId);
         
