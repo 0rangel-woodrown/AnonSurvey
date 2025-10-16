@@ -32,7 +32,16 @@ interface UseSurveyListResult {
 export function useSurveyList(): UseSurveyListResult {
   const publicClient = usePublicClient();
   const contractAddress = useMemo(() => {
-    return CONTRACT_CONFIG.SURVEY_ADDRESS ? (CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`) : null;
+    const address = CONTRACT_CONFIG.SURVEY_ADDRESS;
+    console.log('useSurveyList contractAddress:', address);
+    
+    // Validate address format
+    if (address && address.startsWith('0x') && address.length === 42) {
+      return address as `0x${string}`;
+    }
+    
+    console.error('Invalid contract address format:', address);
+    return null;
   }, []);
 
   const [surveys, setSurveys] = useState<SurveyListItem[]>([]);

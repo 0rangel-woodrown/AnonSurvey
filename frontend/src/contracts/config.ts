@@ -1,11 +1,25 @@
+// Ensure contract address is always valid
+const getContractAddress = () => {
+  const envAddress = import.meta.env.VITE_SURVEY_CONTRACT_ADDRESS;
+  const fallbackAddress = '0x1f90CeE3a8Fab6b2CAe39D25cA4DaaF684836e1B';
+  
+  // Validate the address format
+  if (envAddress && envAddress.startsWith('0x') && envAddress.length === 42) {
+    return envAddress;
+  }
+  
+  console.warn('Invalid or missing contract address from env, using fallback:', envAddress);
+  return fallbackAddress;
+};
+
 export const CONTRACT_CONFIG = {
-  SURVEY_ADDRESS: import.meta.env.VITE_SURVEY_CONTRACT_ADDRESS || '0x1f90CeE3a8Fab6b2CAe39D25cA4DaaF684836e1B',
+  SURVEY_ADDRESS: getContractAddress(),
   CHAIN_ID: parseInt(import.meta.env.VITE_CHAIN_ID || '11155111'),
   NETWORK_NAME: import.meta.env.VITE_NETWORK_NAME || 'sepolia',
 } as const;
 
 // Debug: Log the contract address
-console.log('Contract address:', CONTRACT_CONFIG.SURVEY_ADDRESS);
+console.log('Final contract address:', CONTRACT_CONFIG.SURVEY_ADDRESS);
 console.log('Environment variables:', {
   VITE_SURVEY_CONTRACT_ADDRESS: import.meta.env.VITE_SURVEY_CONTRACT_ADDRESS,
   VITE_CHAIN_ID: import.meta.env.VITE_CHAIN_ID,
