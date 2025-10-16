@@ -109,6 +109,13 @@ const CreateSurvey = () => {
 
       console.log('Creating survey with ID:', surveyId);
       console.log('Contract address:', CONTRACT_CONFIG.SURVEY_ADDRESS);
+      console.log('Environment check:', {
+        isProduction: import.meta.env.PROD,
+        isDevelopment: import.meta.env.DEV,
+        nodeEnv: import.meta.env.MODE,
+        contractAddress: CONTRACT_CONFIG.SURVEY_ADDRESS,
+        chainId: CONTRACT_CONFIG.CHAIN_ID
+      });
       console.log('Survey data:', {
         title,
         description,
@@ -138,8 +145,17 @@ const CreateSurvey = () => {
       
       // Add questions to the survey
       for (let i = 0; i < questions.length; i++) {
-        // Generate a proper 32-byte questionId using crypto.randomBytes
-        const questionId = `0x${crypto.getRandomValues(new Uint8Array(32)).map(b => b.toString(16).padStart(2, '0')).join('')}` as `0x${string}`;
+        // Generate a proper 32-byte questionId using a simpler method
+        const randomBytes = new Uint8Array(32);
+        if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+          crypto.getRandomValues(randomBytes);
+        } else {
+          // Fallback for environments without crypto.getRandomValues
+          for (let i = 0; i < 32; i++) {
+            randomBytes[i] = Math.floor(Math.random() * 256);
+          }
+        }
+        const questionId = `0x${Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('')}` as `0x${string}`;
         
         console.log(`Adding question ${i + 1} with ID:`, questionId);
         
