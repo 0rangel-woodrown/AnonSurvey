@@ -1,7 +1,7 @@
 {
   "name": "anonsurvey",
-  "version": "1.0.0",
-  "description": "Anonymous Survey System with Zama FHE Technology",
+  "version": "2.0.0",
+  "description": "Anonymous Survey System with Zama FHE Technology (v0.9.1)",
   "scripts": {
     "dev": "npm run dev --prefix frontend",
     "build": "npm run build --prefix frontend",
@@ -11,7 +11,7 @@
     "deploy:local": "hardhat run scripts/deploy.ts --network localhost",
     "node": "hardhat node",
     "frontend:install": "cd frontend && npm install",
-    "contracts:install": "npm install --save-dev hardhat @nomicfoundation/hardhat-toolbox @fhevm/solidity",
+    "contracts:install": "npm install --save-dev hardhat @nomicfoundation/hardhat-toolbox @fhevm/solidity @fhevm/hardhat-plugin",
     "postinstall": "npm run contracts:install && npm run frontend:install",
     "vercel-build": "npm run build"
   },
@@ -25,7 +25,8 @@
   "author": "0rangel-woodrown",
   "license": "MIT",
   "devDependencies": {
-    "@fhevm/solidity": "^0.8.0",
+    "@fhevm/hardhat-plugin": "^0.3.0-1",
+    "@fhevm/solidity": "^0.9.1",
     "@nomicfoundation/hardhat-chai-matchers": "^2.1.0",
     "@nomicfoundation/hardhat-ethers": "^3.1.0",
     "@nomicfoundation/hardhat-ignition": "^0.15.13",
@@ -42,7 +43,7 @@
     "chai": "^4.5.0",
     "dotenv": "^17.2.3",
     "ethers": "^6.15.0",
-    "hardhat": "^2.26.3",
+    "hardhat": "^2.27.1",
     "hardhat-gas-reporter": "^1.0.10",
     "solidity-coverage": "^0.8.16",
     "ts-node": "^10.9.2",
@@ -50,6 +51,6 @@
     "typescript": "^5.5.0"
   },
   "dependencies": {
-    "fhevm": "^0.6.2"
+    "@zama-fhe/relayer-sdk": "^0.3.0-5"
   }
 }
