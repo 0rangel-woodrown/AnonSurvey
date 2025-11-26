@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "fhevm/lib/TFHE.sol";
-import "fhevm/config/ZamaFHEVMConfig.sol";
-import "fhevm/gateway/GatewayCaller.sol";
+import "@fhevm/solidity/lib/FHE.sol";
+import "@fhevm/solidity/config/ZamaConfig.sol";
 
 /**
  * @title Survey
  * @notice Advanced anonymous survey system with multi-question types, response validation, and statistical analysis
+ * @dev Updated for fhEVM v0.9.1 - Using FHE library with self-relaying decryption model
  */
-contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
+contract Survey is ZamaEthereumConfig {
     address public owner;
     address public surveyManager;
     address public dataAnalyst;
@@ -78,6 +78,7 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
         uint32 decryptedAverage;
         uint32 decryptedVariance;
         bool decrypted;
+        bool initialized; // FHE values initialized on first response
     }
 
     struct ParticipantProfile {
@@ -88,6 +89,16 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
         euint16 reliabilityScoreCipher;
         uint256 firstSurveyAt;
         uint256 lastSurveyAt;
+    }
+
+    // Decryption request tracking for self-relaying model
+    struct DecryptionRequest {
+        uint256 surveyId;
+        bytes32 questionId;
+        euint32 totalScoreHandle;
+        euint32 varianceHandle;
+        bool pending;
+        uint256 requestedAt;
     }
 
     mapping(uint256 => SurveyMetadata) private surveys;
@@ -104,19 +115,22 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
     uint256 private totalResponses;
     uint256 private totalQuestions;
     euint32 private aggregatedQualityScores;
+    bool private aggregatedInitialized; // Lazy init for FHE
     mapping(uint256 => bool) private decryptionReady;
     mapping(uint256 => uint256) private decryptionExpiry;
 
-    // Gateway decryption tracking
-    mapping(uint256 => uint256) private gatewayRequestToSurvey;
-    mapping(uint256 => bytes32) private gatewayRequestToQuestion;
+    // Self-relaying decryption tracking (v0.9.1)
+    uint256 private nextDecryptionRequestId;
+    mapping(uint256 => DecryptionRequest) private decryptionRequests;
+    mapping(uint256 => mapping(bytes32 => uint256)) private questionDecryptionRequestId;
 
     event SurveyCreated(uint256 indexed surveyId, address indexed creator, string title, uint8 numQuestions);
     event SurveyStatusChanged(uint256 indexed surveyId, SurveyStatus oldStatus, SurveyStatus newStatus);
     event QuestionAdded(uint256 indexed surveyId, bytes32 indexed questionId, QuestionType qType);
     event ResponseSubmitted(uint256 indexed surveyId, address indexed respondent, uint8 questionsAnswered);
     event SurveyFinalized(uint256 indexed surveyId, uint32 participantCount);
-    event DecryptionRequested(uint256 indexed surveyId, bytes32 indexed questionId);
+    event DecryptionRequested(uint256 indexed surveyId, bytes32 indexed questionId, uint256 requestId);
+    event DecryptionReady(uint256 indexed surveyId, bytes32 indexed questionId, uint256 requestId);
     event ResultsDecrypted(uint256 indexed surveyId, bytes32 indexed questionId, uint32 average, uint32 variance);
     event SurveyPaused(uint256 indexed surveyId);
     event SurveyResumed(uint256 indexed surveyId);
@@ -138,14 +152,14 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
     error InvalidDuration();
     error DecryptionNotReady();
     error NoParticipants();
+    error InvalidSignature();
+    error DecryptionPending();
 
     constructor() {
         owner = msg.sender;
         surveyManager = msg.sender;
         dataAnalyst = msg.sender;
-
-        aggregatedQualityScores = TFHE.asEuint32(0);
-        TFHE.allowThis(aggregatedQualityScores);
+        // FHE values initialized lazily on first submitResponse
     }
 
     modifier onlyOwner() {
@@ -222,21 +236,12 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
 
         surveyQuestions[surveyId].push(question);
 
+        // Only set plaintext fields - FHE values initialized on first response
         QuestionStatistics storage stats = questionStats[surveyId][questionId];
         stats.questionId = questionId;
-        stats.totalScoreCipher = TFHE.asEuint32(0);
-        stats.sumOfSquaresCipher = TFHE.asEuint32(0);
-        stats.minResponseCipher = TFHE.asEuint16(maxValue);
-        stats.maxResponseCipher = TFHE.asEuint16(0);
-        stats.varianceCipher = TFHE.asEuint32(0);
         stats.responseCount = 0;
         stats.decrypted = false;
-
-        TFHE.allowThis(stats.totalScoreCipher);
-        TFHE.allowThis(stats.sumOfSquaresCipher);
-        TFHE.allowThis(stats.minResponseCipher);
-        TFHE.allowThis(stats.maxResponseCipher);
-        TFHE.allowThis(stats.varianceCipher);
+        stats.initialized = false;
 
         totalQuestions += 1;
 
@@ -258,9 +263,10 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
     function submitResponse(
         uint256 surveyId,
         bytes32[] memory questionIds,
-        bytes[] memory encryptedAnswers,
-        euint16 qualityScore,
-        euint8 completionTime
+        externalEuint16[] memory encryptedAnswers,
+        bytes memory inputProof,
+        externalEuint16 qualityScoreInput,
+        externalEuint8 completionTimeInput
     ) external {
         SurveyMetadata storage survey = surveys[surveyId];
         if (survey.creator == address(0)) revert SurveyNotFound();
@@ -269,32 +275,46 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
         if (hasSubmitted[surveyId][msg.sender]) revert AlreadySubmitted();
         if (questionIds.length != encryptedAnswers.length) revert InvalidQuestionCount();
 
+        // Convert external encrypted inputs to internal euint types using inputProof
+        euint16 qualityScore = FHE.fromExternal(qualityScoreInput, inputProof);
+        euint8 completionTime = FHE.fromExternal(completionTimeInput, inputProof);
+
         // Process each answer
         for (uint256 i = 0; i < questionIds.length; i++) {
-            euint16 answer = TFHE.asEuint16(abi.decode(encryptedAnswers[i], (uint256)));
+            euint16 answer = FHE.fromExternal(encryptedAnswers[i], inputProof);
 
             QuestionStatistics storage stats = questionStats[surveyId][questionIds[i]];
 
-            // Update total score
-            stats.totalScoreCipher = TFHE.add(stats.totalScoreCipher, TFHE.asEuint32(answer));
+            // Initialize FHE values on first response
+            if (!stats.initialized) {
+                stats.totalScoreCipher = FHE.asEuint32(answer);
+                stats.sumOfSquaresCipher = FHE.mul(FHE.asEuint32(answer), FHE.asEuint32(answer));
+                stats.minResponseCipher = answer;
+                stats.maxResponseCipher = answer;
+                stats.varianceCipher = FHE.asEuint32(0);
+                stats.initialized = true;
+            } else {
+                // Update total score
+                stats.totalScoreCipher = FHE.add(stats.totalScoreCipher, FHE.asEuint32(answer));
 
-            // Update sum of squares for variance calculation
-            euint32 answerSquared = TFHE.mul(TFHE.asEuint32(answer), TFHE.asEuint32(answer));
-            stats.sumOfSquaresCipher = TFHE.add(stats.sumOfSquaresCipher, answerSquared);
+                // Update sum of squares for variance calculation
+                euint32 answerSquared = FHE.mul(FHE.asEuint32(answer), FHE.asEuint32(answer));
+                stats.sumOfSquaresCipher = FHE.add(stats.sumOfSquaresCipher, answerSquared);
 
-            // Update min/max
-            ebool isNewMin = TFHE.lt(answer, stats.minResponseCipher);
-            stats.minResponseCipher = TFHE.select(isNewMin, answer, stats.minResponseCipher);
+                // Update min/max
+                ebool isNewMin = FHE.lt(answer, stats.minResponseCipher);
+                stats.minResponseCipher = FHE.select(isNewMin, answer, stats.minResponseCipher);
 
-            ebool isNewMax = TFHE.gt(answer, stats.maxResponseCipher);
-            stats.maxResponseCipher = TFHE.select(isNewMax, answer, stats.maxResponseCipher);
+                ebool isNewMax = FHE.gt(answer, stats.maxResponseCipher);
+                stats.maxResponseCipher = FHE.select(isNewMax, answer, stats.maxResponseCipher);
+            }
 
             stats.responseCount += 1;
 
-            TFHE.allowThis(stats.totalScoreCipher);
-            TFHE.allowThis(stats.sumOfSquaresCipher);
-            TFHE.allowThis(stats.minResponseCipher);
-            TFHE.allowThis(stats.maxResponseCipher);
+            FHE.allowThis(stats.totalScoreCipher);
+            FHE.allowThis(stats.sumOfSquaresCipher);
+            FHE.allowThis(stats.minResponseCipher);
+            FHE.allowThis(stats.maxResponseCipher);
         }
 
         ResponseRecord memory record = ResponseRecord({
@@ -312,30 +332,39 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
         surveyParticipants[surveyId].push(msg.sender);
         survey.participantCount += 1;
 
-        TFHE.allowThis(qualityScore);
-        TFHE.allowThis(completionTime);
+        FHE.allowThis(qualityScore);
+        FHE.allowThis(completionTime);
 
         ParticipantProfile storage profile = participantProfiles[msg.sender];
         if (profile.participant == address(0)) {
             profile.participant = msg.sender;
             profile.firstSurveyAt = block.timestamp;
-            profile.averageQualityScoreCipher = TFHE.asEuint32(0);
-            profile.reliabilityScoreCipher = TFHE.asEuint16(500);
-            TFHE.allowThis(profile.averageQualityScoreCipher);
-            TFHE.allowThis(profile.reliabilityScoreCipher);
+            profile.averageQualityScoreCipher = FHE.asEuint32(0);
+            profile.reliabilityScoreCipher = FHE.asEuint16(500);
+            FHE.allowThis(profile.averageQualityScoreCipher);
+            FHE.allowThis(profile.reliabilityScoreCipher);
         }
         profile.totalSurveysCompleted += 1;
         profile.totalQuestionsAnswered += questionIds.length;
         profile.lastSurveyAt = block.timestamp;
-        profile.averageQualityScoreCipher = TFHE.div(
-            TFHE.add(profile.averageQualityScoreCipher, TFHE.asEuint32(qualityScore)),
+
+        // Update average quality score (simplified: new average = (old + new) / 2)
+        profile.averageQualityScoreCipher = FHE.div(
+            FHE.add(profile.averageQualityScoreCipher, FHE.asEuint32(qualityScore)),
             2
         );
-        profile.reliabilityScoreCipher = TFHE.add(profile.reliabilityScoreCipher, TFHE.asEuint16(10));
+        profile.reliabilityScoreCipher = FHE.add(profile.reliabilityScoreCipher, FHE.asEuint16(10));
 
         participantSurveys[msg.sender].push(surveyId);
 
-        aggregatedQualityScores = TFHE.add(aggregatedQualityScores, TFHE.asEuint32(qualityScore));
+        // Lazy init aggregatedQualityScores
+        if (!aggregatedInitialized) {
+            aggregatedQualityScores = FHE.asEuint32(qualityScore);
+            aggregatedInitialized = true;
+        } else {
+            aggregatedQualityScores = FHE.add(aggregatedQualityScores, FHE.asEuint32(qualityScore));
+        }
+        FHE.allowThis(aggregatedQualityScores);
         totalResponses += 1;
 
         emit ResponseSubmitted(surveyId, msg.sender, uint8(questionIds.length));
@@ -395,6 +424,13 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
         emit SurveyStatusChanged(surveyId, SurveyStatus.Closed, SurveyStatus.Finalized);
     }
 
+    /**
+     * @notice Request decryption for a question (v0.9.1 self-relaying model)
+     * @dev Makes the encrypted values publicly decryptable for off-chain processing
+     * @param surveyId Survey ID
+     * @param questionId Question ID
+     * @return requestId The decryption request ID for tracking
+     */
     function requestQuestionDecryption(uint256 surveyId, bytes32 questionId) external returns (uint256) {
         SurveyMetadata storage survey = surveys[surveyId];
         if (survey.creator == address(0)) revert SurveyNotFound();
@@ -404,41 +440,102 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
         QuestionStatistics storage stats = questionStats[surveyId][questionId];
         if (stats.decrypted) revert InvalidStatus();
 
+        // Check if decryption already pending
+        uint256 existingRequestId = questionDecryptionRequestId[surveyId][questionId];
+        if (existingRequestId != 0 && decryptionRequests[existingRequestId].pending) {
+            revert DecryptionPending();
+        }
+
         // Calculate variance: Var = (sumOfSquares / n) - (average)^2
-        euint32 avgSquared = TFHE.div(stats.totalScoreCipher, stats.responseCount);
-        avgSquared = TFHE.mul(avgSquared, avgSquared);
-        euint32 meanOfSquares = TFHE.div(stats.sumOfSquaresCipher, stats.responseCount);
-        stats.varianceCipher = TFHE.sub(meanOfSquares, avgSquared);
+        // Note: div in v0.9.1 takes plaintext divisor
+        euint32 avgSquared = FHE.div(stats.totalScoreCipher, stats.responseCount);
+        avgSquared = FHE.mul(avgSquared, avgSquared);
+        euint32 meanOfSquares = FHE.div(stats.sumOfSquaresCipher, stats.responseCount);
+        stats.varianceCipher = FHE.sub(meanOfSquares, avgSquared);
 
-        TFHE.allowThis(stats.varianceCipher);
+        FHE.allowThis(stats.varianceCipher);
 
-        uint256[] memory cts = new uint256[](2);
-        cts[0] = Gateway.toUint256(stats.totalScoreCipher);
-        cts[1] = Gateway.toUint256(stats.varianceCipher);
+        // v0.9.1: Make values publicly decryptable for self-relaying
+        FHE.makePubliclyDecryptable(stats.totalScoreCipher);
+        FHE.makePubliclyDecryptable(stats.varianceCipher);
 
-        uint256 requestId = Gateway.requestDecryption(
-            cts,
-            this.callbackQuestionDecryption.selector,
-            0,
-            block.timestamp + 100,
-            false
-        );
+        // Create decryption request record
+        uint256 requestId = ++nextDecryptionRequestId;
+        decryptionRequests[requestId] = DecryptionRequest({
+            surveyId: surveyId,
+            questionId: questionId,
+            totalScoreHandle: stats.totalScoreCipher,
+            varianceHandle: stats.varianceCipher,
+            pending: true,
+            requestedAt: block.timestamp
+        });
 
-        gatewayRequestToSurvey[requestId] = surveyId;
-        gatewayRequestToQuestion[requestId] = questionId;
+        questionDecryptionRequestId[surveyId][questionId] = requestId;
 
-        emit DecryptionRequested(surveyId, questionId);
+        emit DecryptionRequested(surveyId, questionId, requestId);
+        emit DecryptionReady(surveyId, questionId, requestId);
 
         return requestId;
     }
 
-    function callbackQuestionDecryption(
+    /**
+     * @notice Get decryption request details for off-chain processing
+     * @param requestId The decryption request ID
+     * @return surveyId Survey ID
+     * @return questionId Question ID
+     * @return totalScoreHandle Handle for total score (use with publicDecrypt)
+     * @return varianceHandle Handle for variance (use with publicDecrypt)
+     * @return pending Whether the request is still pending
+     */
+    function getDecryptionRequest(uint256 requestId) external view returns (
+        uint256 surveyId,
+        bytes32 questionId,
+        euint32 totalScoreHandle,
+        euint32 varianceHandle,
+        bool pending
+    ) {
+        DecryptionRequest storage req = decryptionRequests[requestId];
+        return (
+            req.surveyId,
+            req.questionId,
+            req.totalScoreHandle,
+            req.varianceHandle,
+            req.pending
+        );
+    }
+
+    /**
+     * @notice Submit decrypted results with signature verification (v0.9.1)
+     * @dev Called by off-chain relayer after publicDecrypt
+     * @param requestId The decryption request ID
+     * @param totalScore Decrypted total score
+     * @param variance Decrypted variance
+     * @param decryptionProof KMS decryption proof for verification
+     */
+    function submitDecryptedResults(
         uint256 requestId,
         uint32 totalScore,
-        uint32 variance
-    ) public onlyGateway {
-        uint256 surveyId = gatewayRequestToSurvey[requestId];
-        bytes32 questionId = gatewayRequestToQuestion[requestId];
+        uint32 variance,
+        bytes calldata decryptionProof
+    ) external {
+        DecryptionRequest storage req = decryptionRequests[requestId];
+        if (!req.pending) revert InvalidStatus();
+
+        // v0.9.1: Verify KMS signatures using IKMSVerifier
+        bytes32[] memory handlesList = new bytes32[](2);
+        handlesList[0] = bytes32(euint32.unwrap(req.totalScoreHandle));
+        handlesList[1] = bytes32(euint32.unwrap(req.varianceHandle));
+
+        bytes memory decryptedResult = abi.encode(totalScore, variance);
+
+        // Verify signatures from KMS
+        bool isValid = IKMSVerifier(ZamaConfig.getEthereumCoprocessorConfig().KMSVerifierAddress)
+            .verifyDecryptionEIP712KMSSignatures(handlesList, decryptedResult, decryptionProof);
+        if (!isValid) revert InvalidSignature();
+
+        // Process the decrypted results
+        uint256 surveyId = req.surveyId;
+        bytes32 questionId = req.questionId;
 
         SurveyMetadata storage survey = surveys[surveyId];
         QuestionStatistics storage stats = questionStats[surveyId][questionId];
@@ -447,6 +544,8 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
         stats.decryptedAverage = average;
         stats.decryptedVariance = variance;
         stats.decrypted = true;
+
+        req.pending = false;
 
         // Check if all questions are decrypted
         bool allDecrypted = true;
@@ -505,7 +604,6 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
         return (stats.decryptedAverage, stats.decryptedVariance, stats.responseCount, stats.decrypted);
     }
 
-    // 问卷发起人查询自己发布的问卷结果
     function getMySurveyResults(uint256 surveyId)
         external
         view
@@ -524,7 +622,7 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
 
         questions = surveyQuestions[surveyId];
         statistics = new QuestionStatistics[](questions.length);
-        
+
         for (uint256 i = 0; i < questions.length; i++) {
             statistics[i] = questionStats[surveyId][questions[i].questionId];
         }
@@ -539,7 +637,6 @@ contract Survey is SepoliaZamaFHEVMConfig, GatewayCaller {
         );
     }
 
-    // 获取问卷的所有问题
     function getSurveyQuestions(uint256 surveyId)
         external
         view
