@@ -1,5 +1,6 @@
 // Hardcode contract address for production to avoid env variable issues
-const CONTRACT_ADDRESS = '0x1f90CeE3a8Fab6b2CAe39D25cA4DaaF684836e1B';
+// Updated for fhEVM v0.9.1 deployment with fixed submitResponse
+const CONTRACT_ADDRESS = '0x4d96337Eb48431380cCa65729B2c8261003ABAcD';
 
 export const CONTRACT_CONFIG = {
   SURVEY_ADDRESS: CONTRACT_ADDRESS,
