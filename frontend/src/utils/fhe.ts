@@ -1,306 +1,467 @@
 /**
  * FHE Utility Functions for AnonSurvey
- * Based on Zama FHE Complete Guide
+ * Based on LuckyVault pattern - Clean, simple implementation
  *
- * Reference: @FHE_COMPLETE_GUIDE_FULL_CN.md
- * - Section 7: FHE Frontend Initialization
- * - Section 8: Creating Encrypted Data
- * - Section 9: Decryption and Permission Management
+ * Uses CDN-loaded RelayerSDK v0.3.0-5 (fhEVM v0.9.1)
+ * Script tag in index.html:
+ * <script src="https://cdn.zama.org/relayer-sdk-js/0.3.0-5/relayer-sdk-js.umd.cjs" defer crossorigin="anonymous"></script>
  */
 
-import { getAddress, hexlify } from 'ethers';
+import { bytesToHex, getAddress } from 'viem';
+import type { Address } from 'viem';
+import { CONTRACT_CONFIG } from '@/contracts/config';
+
+declare global {
+  interface Window {
+    RelayerSDK?: any;
+    relayerSDK?: any;
+    ethereum?: any;
+    okxwallet?: any;
+  }
+}
 
 let fheInstance: any = null;
 
 /**
- * Initialize FHE instance (Singleton pattern)
- *
- * ⚠️ Must use CDN 0.2.0 version, npm package doesn't work on Sepolia
- * Reference: Section 6.2 Why must use CDN 0.2.0
+ * Get SDK from window (loaded via CDN)
  */
-export async function initializeFHE(): Promise<any> {
-  // Return existing instance if already initialized
-  if (fheInstance) {
-    console.log('[FHE] Instance already initialized');
-    return fheInstance;
+const getSDK = () => {
+  if (typeof window === 'undefined') {
+    throw new Error('FHE SDK requires a browser environment');
   }
-
-  // Environment check
-  if (typeof window === 'undefined' || !window.ethereum) {
-    throw new Error('Ethereum provider not found. Please install MetaMask.');
+  const sdk = window.RelayerSDK || window.relayerSDK;
+  if (!sdk) {
+    throw new Error('Relayer SDK not loaded. Ensure the CDN script tag is present.');
   }
-
-  try {
-    console.log('[FHE] Loading SDK from CDN 0.2.0...');
-
-    // ✅ Correct approach: Load from CDN (Section 6.2)
-    const sdk: any = await import(
-      'https://cdn.zama.ai/relayer-sdk-js/0.2.0/relayer-sdk-js.js'
-    );
-
-    const { initSDK, createInstance, SepoliaConfig } = sdk;
-
-    // Initialize WASM module (Section 7.1 Step 3)
-    console.log('[FHE] Initializing WASM...');
-    await initSDK();
-
-    // Create configuration (Section 7.1 Step 4)
-    const config = {
-      ...SepoliaConfig,  // ✅ Built-in Sepolia configuration
-      network: window.ethereum
-    };
-
-    // Create instance
-    console.log('[FHE] Creating instance...');
-    fheInstance = await createInstance(config);
-
-    console.log('[FHE] ✅ Instance initialized successfully');
-    return fheInstance;
-
-  } catch (error) {
-    console.error('[FHE] ❌ Initialization failed:', error);
-    throw new Error(`FHE initialization failed: ${error}`);
-  }
-}
+  return sdk;
+};
 
 /**
- * Get FHE instance (without initialization)
+ * Initialize FHE instance
+ * @param provider - Optional ethereum provider (defaults to window.ethereum)
  */
-export function getFheInstance(): any {
+export const initializeFHE = async (provider?: any) => {
+  if (fheInstance) return fheInstance;
+
+  if (typeof window === 'undefined') {
+    throw new Error('FHE SDK requires a browser environment');
+  }
+
+  const ethereumProvider =
+    provider || window.ethereum || window.okxwallet?.provider || window.okxwallet;
+
+  if (!ethereumProvider) {
+    throw new Error('No wallet provider detected. Connect a wallet first.');
+  }
+
+  const sdk = getSDK();
+  const { initSDK, createInstance, SepoliaConfig } = sdk;
+
+  await initSDK();
+  const config = { ...SepoliaConfig, network: ethereumProvider };
+  fheInstance = await createInstance(config);
+
+  console.log('[FHE] Instance initialized successfully');
   return fheInstance;
-}
+};
 
 /**
- * Reset FHE instance (for testing or network switching)
+ * Get FHE instance (lazy init if needed)
  */
-export function resetFheInstance(): void {
+const getInstance = async (provider?: any) => {
+  if (fheInstance) return fheInstance;
+  return initializeFHE(provider);
+};
+
+/**
+ * Get FHE instance without initialization
+ */
+export const getFheInstance = () => fheInstance;
+
+/**
+ * Reset FHE instance
+ */
+export const resetFheInstance = () => {
   fheInstance = null;
   console.log('[FHE] Instance reset');
-}
+};
 
 /**
- * Encrypt single uint16 value (for survey answers)
- *
- * Section 8.1: Basic encryption flow
- *
- * @param value - Value to encrypt (answer value, e.g., 0-5)
- * @param contractAddress - Target contract address (must be checksummed)
- * @param userAddress - User address
- * @returns { handle, proof } - Encrypted handle and zero-knowledge proof
+ * Encrypt a single answer (euint16)
+ * @param value - Value to encrypt (0-65535)
+ * @param userAddress - User's wallet address
+ * @param provider - Optional ethereum provider
  */
-export async function encryptAnswer(
+export const encryptAnswer = async (
   value: number,
   contractAddress: string,
-  userAddress: string
-): Promise<{ handle: string; proof: string }> {
-  // Get FHE instance
-  let fhe = getFheInstance();
-  if (!fhe) {
-    fhe = await initializeFHE();
+  userAddress: Address,
+  provider?: any
+): Promise<{ handle: `0x${string}`; proof: `0x${string}` }> => {
+  console.log('[FHE] Encrypting answer:', value);
+
+  const instance = await getInstance(provider);
+  const contractAddr = getAddress(contractAddress);
+  const userAddr = getAddress(userAddress);
+
+  const input = instance.createEncryptedInput(contractAddr, userAddr);
+  input.add16(value); // euint16 for survey answers
+
+  const { handles, inputProof } = await input.encrypt();
+
+  if (handles.length < 1) {
+    throw new Error('FHE SDK returned insufficient handles');
   }
-  if (!fhe) throw new Error('Failed to initialize FHE instance');
 
-  // ⚠️ Critical: Address must comply with EIP-55 checksum (Section 8.1)
-  const contractAddressChecksum = getAddress(contractAddress);
-
-  console.log('[FHE] Creating encrypted input...');
-
-  // Create encrypted input
-  const ciphertext = await fhe.createEncryptedInput(
-    contractAddressChecksum,
-    userAddress
-  );
-
-  // Add 16-bit integer (euint16 is enough for survey answers 0-65535)
-  ciphertext.add16(value);
-
-  console.log('[FHE] Encrypting value...');
-
-  // Encrypt and generate zero-knowledge proof
-  const { handles, inputProof } = await ciphertext.encrypt();
-
-  // Convert to hexadecimal string
-  const handle = hexlify(handles[0]);
-  const proof = hexlify(inputProof);
-
-  console.log('[FHE] ✅ Encryption successful');
-
-  return { handle, proof };
-}
+  return {
+    handle: bytesToHex(handles[0]) as `0x${string}`,
+    proof: bytesToHex(inputProof) as `0x${string}`,
+  };
+};
 
 /**
- * Batch encrypt multiple answers (for submitting surveys)
- *
- * Section 8.3: Batch encrypt multiple values
- *
- * @param answers - Array of answers
- * @param contractAddress - Contract address
- * @param userAddress - User address
- * @returns { handles, proof } - Array of encrypted handles and shared proof
+ * Encrypt multiple answers (batch)
+ * @param answers - Array of answer values
+ * @param userAddress - User's wallet address
+ * @param provider - Optional ethereum provider
  */
-export async function encryptMultipleAnswers(
+export const encryptMultipleAnswers = async (
   answers: number[],
   contractAddress: string,
-  userAddress: string
-): Promise<{ handles: string[]; proof: string }> {
-  const fhe = await initializeFHE();
-  const contractAddressChecksum = getAddress(contractAddress);
+  userAddress: Address,
+  provider?: any
+): Promise<{ handles: `0x${string}`[]; proof: `0x${string}` }> => {
+  console.log(`[FHE] Encrypting ${answers.length} answers...`);
 
-  console.log('[FHE] Creating encrypted input for ' + answers.length + ' answers...');
+  const instance = await getInstance(provider);
+  const contractAddr = getAddress(contractAddress);
+  const userAddr = getAddress(userAddress);
 
-  const ciphertext = await fhe.createEncryptedInput(
-    contractAddressChecksum,
-    userAddress
-  );
+  const input = instance.createEncryptedInput(contractAddr, userAddr);
 
-  // Add multiple values (all values share one proof)
   for (const answer of answers) {
-    ciphertext.add16(answer);
+    input.add16(answer);
   }
 
-  console.log('[FHE] Encrypting multiple values...');
+  const { handles, inputProof } = await input.encrypt();
 
-  // Encrypt (all values share one proof)
-  const { handles, inputProof } = await ciphertext.encrypt();
+  if (handles.length < answers.length) {
+    throw new Error('FHE SDK returned insufficient handles');
+  }
 
-  // Convert all handles
-  const hexHandles = handles.map((h: any) => hexlify(h));
-  const proof = hexlify(inputProof);
+  const hexHandles = handles.map((h: Uint8Array) => bytesToHex(h) as `0x${string}`);
 
-  console.log('[FHE] ✅ Batch encryption successful');
+  console.log(`[FHE] Encrypted ${answers.length} answers successfully`);
 
-  return { handles: hexHandles, proof };
-}
+  return {
+    handles: hexHandles,
+    proof: bytesToHex(inputProof) as `0x${string}`,
+  };
+};
+
+/**
+ * Encrypt survey response data (all in one call for shared inputProof)
+ * @param answers - Array of answer values (euint16)
+ * @param qualityScore - Quality score (euint16)
+ * @param completionTime - Completion time in seconds (euint8)
+ * @param contractAddress - Contract address
+ * @param userAddress - User's wallet address
+ * @param provider - Optional ethereum provider
+ */
+export const encryptSurveyResponse = async (
+  answers: number[],
+  qualityScore: number,
+  completionTime: number,
+  contractAddress: string,
+  userAddress: Address,
+  provider?: any
+): Promise<{
+  answerHandles: `0x${string}`[];
+  qualityScoreHandle: `0x${string}`;
+  completionTimeHandle: `0x${string}`;
+  inputProof: `0x${string}`;
+}> => {
+  console.log(`[FHE] Encrypting survey response: ${answers.length} answers + quality score + completion time`);
+
+  const instance = await getInstance(provider);
+  const contractAddr = getAddress(contractAddress);
+  const userAddr = getAddress(userAddress);
+
+  const input = instance.createEncryptedInput(contractAddr, userAddr);
+
+  // Add all answers as euint16
+  for (const answer of answers) {
+    input.add16(answer);
+  }
+
+  // Add quality score as euint16
+  input.add16(qualityScore);
+
+  // Add completion time as euint8
+  input.add8(completionTime);
+
+  const { handles, inputProof } = await input.encrypt();
+
+  // Total handles = answers.length + 1 (qualityScore) + 1 (completionTime)
+  const expectedHandles = answers.length + 2;
+  if (handles.length < expectedHandles) {
+    throw new Error(`FHE SDK returned ${handles.length} handles, expected ${expectedHandles}`);
+  }
+
+  const hexHandles = handles.map((h: Uint8Array) => bytesToHex(h) as `0x${string}`);
+
+  console.log(`[FHE] Encrypted survey response successfully`);
+
+  return {
+    answerHandles: hexHandles.slice(0, answers.length),
+    qualityScoreHandle: hexHandles[answers.length],
+    completionTimeHandle: hexHandles[answers.length + 1],
+    inputProof: bytesToHex(inputProof) as `0x${string}`,
+  };
+};
 
 /**
  * Encrypt quality score (euint16)
- * For Survey.sol's responseQualityScoreCipher
  */
-export async function encryptQualityScore(
+export const encryptQualityScore = async (
   score: number,
   contractAddress: string,
-  userAddress: string
-): Promise<{ handle: string; proof: string }> {
-  return encryptAnswer(score, contractAddress, userAddress);
-}
+  userAddress: Address,
+  provider?: any
+): Promise<{ handle: `0x${string}`; proof: `0x${string}` }> => {
+  return encryptAnswer(score, contractAddress, userAddress, provider);
+};
 
 /**
  * Encrypt completion time (euint8)
- * For Survey.sol's completionTimeCipher
  */
-export async function encryptCompletionTime(
+export const encryptCompletionTime = async (
   time: number,
   contractAddress: string,
-  userAddress: string
-): Promise<{ handle: string; proof: string }> {
-  const fhe = await initializeFHE();
-  const contractAddressChecksum = getAddress(contractAddress);
+  userAddress: Address,
+  provider?: any
+): Promise<{ handle: `0x${string}`; proof: `0x${string}` }> => {
+  console.log('[FHE] Encrypting completion time:', time);
 
-  const ciphertext = await fhe.createEncryptedInput(
-    contractAddressChecksum,
-    userAddress
-  );
+  const instance = await getInstance(provider);
+  const contractAddr = getAddress(contractAddress);
+  const userAddr = getAddress(userAddress);
 
-  // Use euint8 (0-255 range is enough)
-  ciphertext.add8(time);
+  const input = instance.createEncryptedInput(contractAddr, userAddr);
+  input.add8(time); // euint8 for time (0-255)
 
-  const { handles, inputProof } = await ciphertext.encrypt();
+  const { handles, inputProof } = await input.encrypt();
 
   return {
-    handle: hexlify(handles[0]),
-    proof: hexlify(inputProof)
+    handle: bytesToHex(handles[0]) as `0x${string}`,
+    proof: bytesToHex(inputProof) as `0x${string}`,
   };
-}
+};
 
 /**
- * Request decryption of an encrypted value
- *
- * Section 9.3: Client-side decryption flow - Method 1
- *
- * @param contractAddress - Contract address
- * @param handle - Handle of encrypted data (from event or view function)
- * @returns Decrypted value
+ * Generic encrypt function with configurable bit size
+ * @param value - Value to encrypt
+ * @param bitSize - Bit size: 8, 16, 32, 64, 128, 256
  */
-export async function decryptValue(
+export const encryptValue = async (
+  value: number | bigint,
+  bitSize: 8 | 16 | 32 | 64 | 128 | 256,
+  contractAddress: string,
+  userAddress: Address,
+  provider?: any
+): Promise<{ handle: `0x${string}`; proof: `0x${string}` }> => {
+  const instance = await getInstance(provider);
+  const contractAddr = getAddress(contractAddress);
+  const userAddr = getAddress(userAddress);
+
+  const input = instance.createEncryptedInput(contractAddr, userAddr);
+
+  switch (bitSize) {
+    case 8: input.add8(value); break;
+    case 16: input.add16(value); break;
+    case 32: input.add32(value); break;
+    case 64: input.add64(value); break;
+    case 128: input.add128(value); break;
+    case 256: input.add256(value); break;
+  }
+
+  const { handles, inputProof } = await input.encrypt();
+
+  return {
+    handle: bytesToHex(handles[0]) as `0x${string}`,
+    proof: bytesToHex(inputProof) as `0x${string}`,
+  };
+};
+
+/**
+ * Public decryption for handles marked as publicly decryptable
+ * Returns SDK 0.3.0-5 format: { clearValues, abiEncodedClearValues, decryptionProof }
+ */
+export const publicDecrypt = async (
+  handles: string[]
+): Promise<{
+  clearValues: Record<string, bigint>;
+  abiEncodedClearValues: `0x${string}`;
+  decryptionProof: `0x${string}`;
+}> => {
+  const instance = getFheInstance();
+  if (!instance) throw new Error('FHE not initialized');
+
+  console.log('[FHE] Requesting public decryption for', handles.length, 'handles...');
+
+  const result = await instance.publicDecrypt(handles);
+
+  return {
+    clearValues: result.clearValues || {},
+    abiEncodedClearValues: (result.abiEncodedClearValues || '0x') as `0x${string}`,
+    decryptionProof: (result.decryptionProof || '0x') as `0x${string}`,
+  };
+};
+
+/**
+ * Decrypt single value
+ */
+export const decryptValue = async (
   contractAddress: string,
   handle: string
-): Promise<number> {
-  const fhe = getFheInstance();
-  if (!fhe) throw new Error('FHE not initialized');
+): Promise<number> => {
+  const result = await publicDecrypt([handle]);
+  const value = result.clearValues[handle];
 
-  try {
-    console.log('[FHE] Requesting decryption...');
-
-    // publicDecrypt will request decryption permission from contract, then decrypt
-    const values = await fhe.publicDecrypt([handle]);
-    const decryptedValue = Number(values[handle]);
-
-    console.log('[FHE] ✅ Decryption successful');
-
-    return decryptedValue;
-  } catch (error: any) {
-    console.error('[FHE] ❌ Decryption failed:', error);
-
-    if (error?.message?.includes('Failed to fetch')) {
-      throw new Error('Decryption service temporarily unavailable');
-    }
-    if (error?.message?.includes('not authorized')) {
-      throw new Error('You do not have permission to decrypt this data');
-    }
-    throw error;
+  if (value === undefined) {
+    throw new Error(`Failed to decrypt handle: ${handle}`);
   }
-}
+
+  return Number(value);
+};
 
 /**
  * Batch decrypt multiple values
- *
- * @param contractAddress - Contract address
- * @param handles - Array of encrypted data handles
- * @returns Array of decrypted values
  */
-export async function decryptMultipleValues(
+export const decryptMultipleValues = async (
   contractAddress: string,
   handles: string[]
-): Promise<number[]> {
-  const fhe = getFheInstance();
-  if (!fhe) throw new Error('FHE not initialized');
+): Promise<number[]> => {
+  const result = await publicDecrypt(handles);
 
-  try {
-    console.log('[FHE] Requesting decryption for ' + handles.length + ' values...');
+  return handles.map(handle => {
+    const value = result.clearValues[handle];
+    if (value === undefined) {
+      throw new Error(`Failed to decrypt handle: ${handle}`);
+    }
+    return Number(value);
+  });
+};
 
-    const values = await fhe.publicDecrypt(handles);
-    const decryptedValues = handles.map(handle => Number(values[handle]));
+/**
+ * User decryption with EIP-712 signature
+ */
+export const userDecrypt = async (
+  handles: string[],
+  contractAddress: string,
+  signer: any
+): Promise<Record<string, number>> => {
+  const instance = getFheInstance();
+  if (!instance) throw new Error('FHE not initialized');
 
-    console.log('[FHE] ✅ Batch decryption successful');
+  console.log('[FHE] Using EIP-712 user decryption...');
 
-    return decryptedValues;
-  } catch (error: any) {
-    console.error('[FHE] ❌ Batch decryption failed:', error);
-    throw error;
+  const keypair = instance.generateKeypair();
+  const handleContractPairs = handles.map(handle => ({
+    handle,
+    contractAddress,
+  }));
+
+  const startTimeStamp = Math.floor(Date.now() / 1000).toString();
+  const durationDays = '10';
+  const contractAddresses = [contractAddress];
+
+  const eip712 = instance.createEIP712(
+    keypair.publicKey,
+    contractAddresses,
+    startTimeStamp,
+    durationDays
+  );
+
+  const signature = await signer.signTypedData(
+    eip712.domain,
+    { UserDecryptRequestVerification: eip712.types.UserDecryptRequestVerification },
+    eip712.message
+  );
+
+  const result = await instance.userDecrypt(
+    handleContractPairs,
+    keypair.privateKey,
+    keypair.publicKey,
+    signature.replace('0x', ''),
+    contractAddresses,
+    await signer.getAddress(),
+    startTimeStamp,
+    durationDays
+  );
+
+  const decryptedValues: Record<string, number> = {};
+  for (const handle of handles) {
+    decryptedValues[handle] = Number(result[handle]);
   }
-}
+
+  return decryptedValues;
+};
+
+// ============ Status & Utility Functions ============
 
 /**
- * Generate question ID (bytes32)
- * For contract's questionId
+ * Check if FHE SDK is loaded (CDN script present)
  */
-export function generateQuestionId(questionText: string, index: number): string {
-  // Use keccak256 hash
-  const encoder = new TextEncoder();
-  const data = encoder.encode(questionText + '-' + index);
-
-  // Simple implementation: use combination of question text and index
-  // In production, should use ethers.keccak256
-  const hash = Array.from(data)
-    .reduce((acc, byte) => acc + byte.toString(16).padStart(2, '0'), '0x');
-
-  // Pad to 32 bytes
-  return hash.padEnd(66, '0');
-}
+export const isFHEReady = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  return !!(window.RelayerSDK || window.relayerSDK);
+};
 
 /**
- * Check if FHE is initialized
+ * Check if FHE instance is initialized
  */
-export function isFheInitialized(): boolean {
+export const isFheInitialized = (): boolean => {
   return fheInstance !== null;
-}
+};
+
+/**
+ * Alias for compatibility
+ */
+export const isRelayerSDKLoaded = isFHEReady;
+
+/**
+ * Wait for FHE SDK to be loaded (with timeout)
+ */
+export const waitForFHE = async (timeoutMs: number = 10000): Promise<boolean> => {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < timeoutMs) {
+    if (isFHEReady()) {
+      return true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+
+  return false;
+};
+
+/**
+ * Get FHE status for debugging
+ */
+export const getFHEStatus = (): {
+  sdkLoaded: boolean;
+  instanceReady: boolean;
+} => {
+  return {
+    sdkLoaded: isFHEReady(),
+    instanceReady: fheInstance !== null,
+  };
+};
+
+/**
+ * Get SDK version info
+ */
+export const getSdkVersion = (): string => {
+  return 'RelayerSDK v0.3.0-5 (fhEVM v0.9.1) - CDN';
+};
