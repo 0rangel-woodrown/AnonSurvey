@@ -19,7 +19,7 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useFHE } from '@/hooks/useFHE';
-import { encryptCompletionTime, encryptMultipleAnswers, encryptQualityScore } from '@/utils/fhe';
+import { encryptSurveyResponse } from '@/utils/fhe';
 import {
   useSurveyContract,
   useSurveyInfo,
@@ -27,7 +27,15 @@ import {
 } from '@/hooks/useSurveyContract';
 import { CONTRACT_CONFIG, QUESTION_TYPE } from '@/contracts/config';
 import { SURVEY_ABI } from '@/contracts/SurveyABI';
-import { encodeAbiParameters } from 'viem';
+import { toast } from 'sonner';
+import {
+  toastTxPending,
+  toastTxSuccess,
+  toastEncrypting,
+  toastEncryptionComplete,
+  handleTxError,
+  isUserRejectedError,
+} from '@/lib/toast-utils';
 
 interface Question {
   id: `0x${string}`;
@@ -116,9 +124,11 @@ export default function TakeSurvey() {
   // Submit answers
   const handleSubmit = async () => {
     if (!address || !fhe || !surveyIdBigInt) {
+      toast.error("Please connect your wallet first");
       return;
     }
     if (!CONTRACT_CONFIG.SURVEY_ADDRESS) {
+      toast.error("Survey contract address is not configured");
       setSubmitError('Survey contract address is not configured.');
       return;
     }
@@ -126,6 +136,7 @@ export default function TakeSurvey() {
     // Validate all questions are answered
     const unansweredQuestions = questions.filter(q => answers[q.id] === undefined);
     if (unansweredQuestions.length > 0) {
+      toast.error(`Please answer all questions (${unansweredQuestions.length} remaining)`);
       setSubmitError(`Please answer all questions (${unansweredQuestions.length} remaining)`);
       return;
     }
@@ -142,23 +153,7 @@ export default function TakeSurvey() {
 
       console.log('[TakeSurvey] Answers:', answerValues);
 
-      // 2. Encrypt all answers
-      console.log('[TakeSurvey] Encrypting answers with FHE...');
-      const { handles } = await encryptMultipleAnswers(
-        answerValues,
-        CONTRACT_CONFIG.SURVEY_ADDRESS,
-        address
-      );
-
-      console.log('[TakeSurvey] Encryption successful');
-      console.log('[TakeSurvey] Handles:', handles.length);
-
-      // 3. Convert to contract required format (bytes[] with abi-encoded uint256)
-      const encryptedAnswers = handles.map(handle =>
-        encodeAbiParameters([{ type: 'uint256' }], [BigInt(handle)])
-      );
-
-      // 4. Encrypt quality score & completion time separately
+      // 2. Calculate quality score and completion time
       const averageScore =
         answerValues.reduce((acc, value) => acc + value, 0) / Math.max(answerValues.length, 1);
       const qualityScoreValue = Math.min(65535, Math.max(0, Math.round(averageScore * 100)));
@@ -169,28 +164,34 @@ export default function TakeSurvey() {
         Math.max(
           1,
           Math.round(
-            (completedAt - (startTimeRef.current ?? completedAt)) /
-              (typeof performance !== 'undefined' ? 1000 : 1000)
+            (completedAt - (startTimeRef.current ?? completedAt)) / 1000
           )
         )
       );
 
-      const { handle: qualityScoreHandle } = await encryptQualityScore(
-        qualityScoreValue,
-        CONTRACT_CONFIG.SURVEY_ADDRESS,
-        address
-      );
+      // 3. Encrypt all data in one call (shared inputProof)
+      console.log('[TakeSurvey] Encrypting all data with FHE...');
+      toastEncrypting('survey-encrypt');
 
-      const { handle: completionTimeHandle } = await encryptCompletionTime(
+      const {
+        answerHandles,
+        qualityScoreHandle,
+        completionTimeHandle,
+        inputProof
+      } = await encryptSurveyResponse(
+        answerValues,
+        qualityScoreValue,
         elapsedSeconds,
         CONTRACT_CONFIG.SURVEY_ADDRESS,
         address
       );
 
-      const qualityScoreCipher = BigInt(qualityScoreHandle);
-      const completionTimeCipher = BigInt(completionTimeHandle);
+      console.log('[TakeSurvey] Encryption successful');
+      console.log('[TakeSurvey] Answer handles:', answerHandles.length);
 
-      // 5. Call contract
+      toastEncryptionComplete('survey-encrypt');
+
+      // 4. Call contract with new parameter format
       console.log('[TakeSurvey] Calling smart contract...');
 
       if (!writeContractAsync) {
@@ -204,24 +205,33 @@ export default function TakeSurvey() {
         args: [
           surveyIdBigInt,
           questionIds,
-          encryptedAnswers,
-          qualityScoreCipher,
-          completionTimeCipher
+          answerHandles,
+          inputProof,
+          qualityScoreHandle,
+          completionTimeHandle
         ],
       });
 
       console.log('[TakeSurvey] Transaction submitted:', txHash);
+      toastTxPending(txHash, "Submitting survey response...");
       setIsConfirming(true);
-      
+
       // Wait for transaction confirmation
       await publicClient.waitForTransactionReceipt({ hash: txHash });
 
       console.log('[TakeSurvey] ✅ Submission successful');
+      toastTxSuccess(txHash, "Survey response submitted successfully!");
       setSubmitSuccess(true);
 
     } catch (error: any) {
       console.error('[TakeSurvey] ❌ Submission failed:', error);
-      setSubmitError(error.message || 'Submission failed, please try again');
+
+      if (isUserRejectedError(error)) {
+        toast.error("Transaction rejected by user");
+      } else {
+        handleTxError(undefined, error);
+        setSubmitError(error.message || 'Submission failed, please try again');
+      }
     } finally {
       setIsConfirming(false);
       setIsSubmitting(false);
