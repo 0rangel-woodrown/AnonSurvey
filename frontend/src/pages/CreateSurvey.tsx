@@ -5,9 +5,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Plus, Trash2, Lock, Copy, Check, Share2 } from 'lucide-react';
-import { useToast } from '@/hooks/use-toast';
 import { useSurveyContract, useWatchSurveyEvents } from '@/hooks/useSurveyContract';
-import { useAccount } from 'wagmi';
+import { useAccount, usePublicClient } from 'wagmi';
 import { CONTRACT_CONFIG } from '@/contracts/config';
 import { SURVEY_ABI } from '@/contracts/SurveyABI';
 import {
@@ -17,6 +16,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { toast } from 'sonner';
+import {
+  toastTxPending,
+  toastTxSuccess,
+  toastTxConfirming,
+  handleTxError,
+  isUserRejectedError,
+} from '@/lib/toast-utils';
 
 interface Question {
   id: number;
@@ -25,8 +32,8 @@ interface Question {
 }
 
 const CreateSurvey = () => {
-  const { toast } = useToast();
   const { address, isConnected } = useAccount();
+  const publicClient = usePublicClient();
   const { isWriting, writeContractAsync } = useSurveyContract();
 
   const [title, setTitle] = useState('');
@@ -75,29 +82,21 @@ const CreateSurvey = () => {
 
   const handleSubmit = async () => {
     if (!isConnected) {
-      toast({
-        title: "Wallet not connected",
-        description: "Please connect your wallet first",
-        variant: "destructive",
-      });
+      toast.error("Please connect your wallet first");
       return;
     }
 
     if (!title || questions.some(q => !q.text)) {
-      toast({
-        title: "Please complete survey information",
-        description: "Title and all questions cannot be empty",
-        variant: "destructive",
-      });
+      toast.error("Title and all questions cannot be empty");
       return;
     }
 
     try {
       // Generate a unique survey ID (using timestamp + random)
       const surveyId = BigInt(Date.now() + Math.floor(Math.random() * 1000));
-      
+
       console.log('Generated surveyId:', surveyId.toString());
-      
+
       // Convert days to seconds
       const durationSeconds = BigInt(parseInt(duration) * 24 * 60 * 60);
       const targetResponsesBigInt = BigInt(parseInt(targetResponses));
@@ -108,23 +107,8 @@ const CreateSurvey = () => {
       }
 
       console.log('Creating survey with ID:', surveyId);
-      console.log('Contract address:', CONTRACT_CONFIG.SURVEY_ADDRESS);
-      console.log('Environment check:', {
-        isProduction: import.meta.env.PROD,
-        isDevelopment: import.meta.env.DEV,
-        nodeEnv: import.meta.env.MODE,
-        contractAddress: CONTRACT_CONFIG.SURVEY_ADDRESS,
-        chainId: CONTRACT_CONFIG.CHAIN_ID
-      });
-      console.log('Survey data:', {
-        title,
-        description,
-        questions: questions.length,
-        duration: parseInt(duration),
-        targetResponses: parseInt(targetResponses)
-      });
 
-      // Call createSurvey with correct parameters
+      // Step 1: Create survey
       const txHash = await writeContractAsync({
         address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
         abi: SURVEY_ABI,
@@ -133,32 +117,35 @@ const CreateSurvey = () => {
           surveyId,
           title,
           description,
-          questions.length, // numQuestions
+          questions.length,
           durationSeconds,
           targetResponsesBigInt,
-          18, // minAge
-          false // requiresVerification
+          18,
+          false
         ],
       });
 
       console.log('Survey creation transaction hash:', txHash);
-      
-      // Add questions to the survey
+      toastTxPending(txHash, "Creating survey...");
+
+      // Wait for confirmation
+      await publicClient.waitForTransactionReceipt({ hash: txHash });
+      toastTxSuccess(txHash, "Survey created successfully!");
+
+      // Step 2: Add questions
       for (let i = 0; i < questions.length; i++) {
-        // Generate a proper 32-byte questionId using a simpler method
         const randomBytes = new Uint8Array(32);
         if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
           crypto.getRandomValues(randomBytes);
         } else {
-          // Fallback for environments without crypto.getRandomValues
-          for (let i = 0; i < 32; i++) {
-            randomBytes[i] = Math.floor(Math.random() * 256);
+          for (let j = 0; j < 32; j++) {
+            randomBytes[j] = Math.floor(Math.random() * 256);
           }
         }
         const questionId = `0x${Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('')}` as `0x${string}`;
-        
+
         console.log(`Adding question ${i + 1} with ID:`, questionId);
-        
+
         const questionTxHash = await writeContractAsync({
           address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
           abi: SURVEY_ABI,
@@ -166,41 +153,41 @@ const CreateSurvey = () => {
           args: [
             surveyId,
             questionId,
-            0, // QuestionType.Rating
-            0, // minValue
-            5, // maxValue
+            0,
+            0,
+            5,
             questions[i].text
           ],
         });
-        
-        console.log(`Question ${i + 1} added, tx hash:`, questionTxHash);
+
+        toastTxPending(questionTxHash, `Adding question ${i + 1}/${questions.length}...`);
+        await publicClient.waitForTransactionReceipt({ hash: questionTxHash });
+        toastTxSuccess(questionTxHash, `Question ${i + 1} added`);
       }
 
-      // Activate the survey
+      // Step 3: Activate survey
       const activateTxHash = await writeContractAsync({
         address: CONTRACT_CONFIG.SURVEY_ADDRESS as `0x${string}`,
         abi: SURVEY_ABI,
         functionName: 'activateSurvey',
         args: [surveyId],
       });
-      
-      console.log('Survey activated, tx hash:', activateTxHash);
+
+      toastTxPending(activateTxHash, "Activating survey...");
+      await publicClient.waitForTransactionReceipt({ hash: activateTxHash });
+      toastTxSuccess(activateTxHash, "Survey is now active!");
 
       setCreatedSurveyId(Number(surveyId));
       setShowShareModal(true);
 
-      toast({
-        title: "Survey created successfully!",
-        description: `Survey ID: ${surveyId}`,
-      });
-
     } catch (error: any) {
       console.error('Error creating survey:', error);
-      toast({
-        title: "Error creating survey",
-        description: error.message || "Please try again",
-        variant: "destructive",
-      });
+
+      if (isUserRejectedError(error)) {
+        toast.error("Transaction rejected by user");
+      } else {
+        handleTxError(undefined, error);
+      }
     }
   };
 
@@ -215,10 +202,7 @@ const CreateSurvey = () => {
     navigator.clipboard.writeText(url);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-    toast({
-      title: "Copied!",
-      description: "Share URL copied to clipboard",
-    });
+    toast.success("Share URL copied to clipboard");
   };
 
   return (
