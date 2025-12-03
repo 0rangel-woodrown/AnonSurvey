@@ -1,334 +1,160 @@
-# AnonSurvey 🔐
+# AnonSurvey
 
-A fully anonymous on-chain survey system powered by Zama's Fully Homomorphic Encryption (FHE) technology. Create surveys, collect encrypted responses, and perform statistical analysis while maintaining complete privacy.
+**Privacy-Preserving Survey Platform with Fully Homomorphic Encryption**
 
-## 🌟 Key Features
+A decentralized survey system that ensures complete respondent anonymity through Zama's fhEVM technology. Survey responses are encrypted client-side and remain encrypted on-chain, enabling statistical computations without ever exposing individual answers.
 
-- **🔐 Complete Anonymity**: User responses are fully encrypted and untraceable
-- **📊 Homomorphic Statistics**: Real-time computation of scores and averages on encrypted data
-- **🔓 Asynchronous Decryption**: Use Gateway for post-deadline statistical result decryption
-- **🚫 Anti-Cheating**: One submission per address only
-- **⭐ Multiple Question Types**: Rating, Yes/No, Multiple Choice, Numeric, Sentiment Analysis
-- **📈 Advanced Statistics**: Mean, variance, min/max calculations
-- **🌐 Web3 Integration**: Seamless wallet connection with RainbowKit
+## Live Demo
 
-## 🏗️ Architecture
+- **Application**: [anonsurvey-fhe.vercel.app](https://anonsurvey-fhe.vercel.app)
+- **Contract**: [`0x4d96337Eb48431380cCa65729B2c8261003ABAcD`](https://sepolia.etherscan.io/address/0x4d96337Eb48431380cCa65729B2c8261003ABAcD) (Sepolia)
 
-### Smart Contract Layer
-- **Survey.sol**: Main contract handling survey lifecycle and FHE operations
-- **FHE Integration**: Zama fhEVM for homomorphic encryption operations
-- **Gateway Integration**: Asynchronous decryption for statistical results
+https://github.com/user-attachments/assets/vote_demo.mp4
 
-### Frontend Layer
-- **React 18 + TypeScript**: Modern web application framework
-- **Wagmi + RainbowKit**: Web3 wallet integration
-- **shadcn/ui + Tailwind CSS**: Beautiful, responsive UI components
-- **FHE Client**: Client-side encryption using Zama's FHE library
+## Technical Architecture
 
-### Data Flow
+### FHE Integration (Zama fhEVM v0.9.1)
+
+The system leverages Fully Homomorphic Encryption to perform computations on encrypted data:
+
 ```
-User Input → FHE Encryption → Blockchain Storage → Homomorphic Computation → Gateway Decryption → Statistical Results
-```
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Node.js >= 18
-- npm or yarn
-- MetaMask or other Web3 wallet
-- Sepolia testnet ETH for gas fees
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/0rangel-woodrown/AnonSurvey.git
-cd AnonSurvey
-
-# Install dependencies
-npm install
-
-# Install frontend dependencies
-cd frontend && npm install && cd ..
+┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
+│   Browser   │────▶│  FHE Client  │────▶│   Blockchain    │
+│  (Plaintext)│     │ (Encryption) │     │  (Ciphertext)   │
+└─────────────┘     └──────────────┘     └────────┬────────┘
+                                                  │
+                           Homomorphic Operations │
+                                                  ▼
+┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
+│   Results   │◀────│   Gateway    │◀────│  Encrypted Sum  │
+│ (Decrypted) │     │ (Decryption) │     │   & Statistics  │
+└─────────────┘     └──────────────┘     └─────────────────┘
 ```
 
-### Configuration
+**Encrypted Types Used:**
+- `euint16` - Individual survey responses (answers 1-10, yes/no, etc.)
+- `euint32` - Aggregated statistics (sum, sum of squares, variance)
+- `externalEuint16/8` - External encrypted inputs with proof verification
 
-1. **Environment Setup**:
-```bash
-# Copy environment files
-cp .env.example .env
-cp frontend/.env.example frontend/.env.local
+**Key FHE Operations:**
+```solidity
+// Lazy initialization on first response
+stats.totalScoreCipher = FHE.asEuint32(answer);
+stats.sumOfSquaresCipher = FHE.mul(FHE.asEuint32(answer), FHE.asEuint32(answer));
+
+// Homomorphic aggregation for subsequent responses
+stats.totalScoreCipher = FHE.add(stats.totalScoreCipher, FHE.asEuint32(answer));
+stats.minResponseCipher = FHE.min(stats.minResponseCipher, answer);
+stats.maxResponseCipher = FHE.max(stats.maxResponseCipher, answer);
 ```
 
-2. **Configure `.env`** (root directory):
-```env
-SEPOLIA_RPC_URL=https://sepolia.drpc.org
-PRIVATE_KEY=your-private-key-here
-GITHUB_PAT=your-github-pat-here
-ETHERSCAN_API_KEY=your-etherscan-api-key
+### Smart Contract Design
+
+**Survey Lifecycle:**
+```
+DRAFT → ACTIVE → PAUSED ↔ ACTIVE → CLOSED → FINALIZED → DECRYPTED
+         ↓                    ↓
+    (responses)          (deadline)
 ```
 
-3. **Configure `frontend/.env.local`**:
-```env
-VITE_SURVEY_CONTRACT_ADDRESS=0x...
-VITE_CHAIN_ID=11155111
-VITE_NETWORK_NAME=sepolia
-VITE_WALLETCONNECT_PROJECT_ID=your-walletconnect-project-id
-```
+**Response Submission Flow:**
+1. Client encrypts answers using `fhevmjs` library
+2. Encrypted handles + input proof sent to contract
+3. Contract validates via `FHE.fromExternal(handle, inputProof)`
+4. Homomorphic operations update aggregate statistics
+5. Individual responses never stored or reconstructable
 
-### Development
+### Privacy Guarantees
 
-```bash
-# Compile smart contracts
-npm run compile
+| Property | Mechanism |
+|----------|-----------|
+| Response Privacy | Client-side FHE encryption before submission |
+| Unlinkability | Only aggregate stats stored, no individual mapping |
+| Computation Privacy | All statistics computed on encrypted values |
+| Result Integrity | Gateway decryption with proof verification |
 
-# Deploy to Sepolia testnet
-npm run deploy
-
-# Start frontend development server
-npm run dev
-```
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 AnonSurvey/
-├── contracts/                  # Solidity smart contracts
-│   └── Survey.sol              # Main survey contract with FHE
-├── scripts/                    # Deployment scripts
-│   └── deploy.ts               # Contract deployment script
-├── test/                       # Contract tests
-├── frontend/                   # React frontend application
+├── contracts/
+│   └── Survey.sol              # Core FHE survey contract (26KB)
+├── frontend/
 │   ├── src/
-│   │   ├── components/         # React components
-│   │   │   ├── ui/             # shadcn/ui components
-│   │   │   ├── Header.tsx      # Navigation header
-│   │   │   └── WalletButton.tsx # Web3 wallet connection
-│   │   ├── pages/              # Page components
-│   │   │   ├── Index.tsx       # Landing page
-│   │   │   ├── Surveys.tsx     # Survey listing
-│   │   │   ├── CreateSurvey.tsx # Survey creation
-│   │   │   ├── TakeSurvey.tsx  # Survey participation
-│   │   │   └── SurveyResults.tsx # Results viewing
-│   │   ├── hooks/              # Custom React hooks
-│   │   │   ├── useSurveyContract.ts # Contract interaction
-│   │   │   └── useFHE.ts       # FHE operations
-│   │   ├── contracts/          # Contract configuration
-│   │   │   ├── SurveyABI.ts    # Contract ABI
-│   │   │   └── config.ts       # Contract addresses
-│   │   ├── config/             # App configuration
-│   │   │   └── wagmi.ts        # Wagmi/RainbowKit setup
-│   │   └── utils/              # Utility functions
-│   │       └── fhe.ts          # FHE encryption utilities
-│   └── package.json            # Frontend dependencies
-├── hardhat.config.ts           # Hardhat configuration
-├── package.json                # Root dependencies
-└── README.md                   # This file
+│   │   ├── hooks/
+│   │   │   ├── useFHE.ts       # FHE client initialization
+│   │   │   └── useSurveyContract.ts
+│   │   ├── utils/
+│   │   │   └── fhe.ts          # Encryption utilities
+│   │   └── pages/
+│   │       ├── Surveys.tsx     # Survey listing
+│   │       └── TakeSurvey.tsx  # Response submission
+│   └── package.json
+├── scripts/
+│   └── deploy-simple.js        # Deployment + survey creation
+└── hardhat.config.ts
 ```
 
-## 🔧 Technical Implementation
+## Development
 
-### Smart Contract Features
+### Prerequisites
 
-#### Survey Lifecycle Management
-```solidity
-// Create a new survey
-function createSurvey(
-    uint256 surveyId,
-    string memory title,
-    string memory description,
-    uint32 numQuestions,
-    uint256 duration,
-    uint32 targetParticipants,
-    uint32 minAge,
-    bool requiresVerification
-) external;
+- Node.js 18+
+- MetaMask with Sepolia ETH
 
-// Add questions to survey
-function addQuestion(
-    uint256 surveyId,
-    bytes32 questionId,
-    QuestionType qType,
-    uint32 minValue,
-    uint32 maxValue,
-    string memory text
-) external;
-
-// Activate survey for participation
-function activateSurvey(uint256 surveyId) external;
-```
-
-#### FHE Operations
-```solidity
-// Homomorphic addition for score accumulation
-stats.totalScoreCipher = FHE.add(stats.totalScoreCipher, FHE.asEuint32(answer));
-
-// Encrypted comparison for min/max updates
-ebool isNewMin = FHE.lt(answer, stats.minResponseCipher);
-stats.minResponseCipher = FHE.select(isNewMin, answer, stats.minResponseCipher);
-
-// Variance calculation on encrypted data
-euint32 avgSquared = FHE.div(stats.totalScoreCipher, uint32(stats.responseCount));
-avgSquared = FHE.mul(avgSquared, avgSquared);
-euint32 meanOfSquares = FHE.div(stats.sumOfSquaresCipher, uint32(stats.responseCount));
-stats.varianceCipher = FHE.sub(meanOfSquares, avgSquared);
-```
-
-#### Gateway Integration
-```solidity
-// Request decryption of statistical results
-uint256 requestId = Gateway.requestDecryption(
-    cts,
-    this.callbackQuestionDecryption.selector,
-    0,
-    block.timestamp + 100,
-    false
-);
-```
-
-### Frontend Implementation
-
-#### FHE Client Integration
-```typescript
-// Encrypt multiple answers
-const { handles, proof } = await encryptMultipleAnswers(
-  answers,
-  contractAddress,
-  userAddress
-);
-
-// Submit encrypted response
-await writeContract({
-  address: CONTRACT_CONFIG.SURVEY_ADDRESS,
-  abi: SURVEY_ABI,
-  functionName: 'submitResponse',
-  args: [surveyId, questionIds, handles, qualityScore, completionTime],
-});
-```
-
-#### Web3 Integration
-```typescript
-// Contract interaction hook
-export function useSurveyContract() {
-  const { writeContract } = useWriteContract();
-  
-  const createSurvey = async (surveyData) => {
-    return await writeContract({
-      address: CONTRACT_CONFIG.SURVEY_ADDRESS,
-      abi: SURVEY_ABI,
-      functionName: 'createSurvey',
-      args: [surveyData],
-    });
-  };
-  
-  return { createSurvey, /* other functions */ };
-}
-```
-
-## 📊 Survey States
-
-```
-Draft → Active → Paused/Closed → Finalized → Decrypted
-  ↓       ↓         ↓              ↓            ↓
-Create   Activate  Pause/Close   Finalize    Decrypt Results
-```
-
-## 🎯 Use Cases
-
-1. **Customer Satisfaction Surveys**: Anonymous feedback collection
-2. **Employee Surveys**: Privacy-protected internal research
-3. **Academic Research**: Privacy-preserving survey studies
-4. **Product Ratings**: Anonymous product evaluation systems
-5. **Voting Systems**: Confidential voting and opinion polls
-
-## 🔐 Privacy Guarantees
-
-- ✅ User responses are encrypted end-to-end
-- ✅ No way to trace who submitted which answers
-- ✅ Only aggregated statistical results are visible
-- ✅ Even survey creators cannot view individual responses
-- ✅ On-chain data remains completely confidential
-
-## 🛠️ Development Commands
+### Setup
 
 ```bash
+# Install dependencies
+npm install
+cd frontend && npm install
+
+# Configure environment
+cp .env.example .env
+# Add PRIVATE_KEY and SEPOLIA_RPC_URL
+
 # Compile contracts
-npm run compile
+npx hardhat compile
 
-# Run tests
-npm run test
+# Deploy (includes 4 test surveys)
+SEPOLIA_RPC_URL="https://ethereum-sepolia-rpc.publicnode.com" node scripts/deploy-simple.js
 
-# Deploy to Sepolia
-npm run deploy
-
-# Start frontend dev server
-npm run dev
-
-# Build frontend for production
-npm run build
-
-# Clean build artifacts
-npx hardhat clean
-
-# Verify contract on Etherscan
-npx hardhat verify --network sepolia <CONTRACT_ADDRESS>
+# Run frontend
+cd frontend && npm run dev
 ```
 
-## 📚 Technology Stack
+### Contract Deployment
 
-### Smart Contracts
-- **Solidity 0.8.24**: Smart contract language
-- **Zama fhEVM**: Fully Homomorphic Encryption for Ethereum
-- **Hardhat**: Development environment and testing framework
-- **TypeChain**: TypeScript bindings for smart contracts
+The deploy script handles:
+1. Contract deployment with manual gas price (10 gwei) to avoid low RPC estimates
+2. Creation of 4 demo surveys with varying question types
+3. Survey activation for immediate use
 
-### Frontend
-- **React 18**: UI framework
-- **TypeScript**: Type-safe JavaScript
-- **Vite**: Fast build tool and dev server
-- **Wagmi**: React hooks for Ethereum
-- **RainbowKit**: Wallet connection UI
-- **shadcn/ui**: Modern UI component library
-- **Tailwind CSS**: Utility-first CSS framework
+## Question Types
 
-### Infrastructure
-- **Sepolia Testnet**: Ethereum test network
-- **Zama Gateway**: FHE decryption service
-- **Infura/drpc.org**: RPC providers
+| Type | Value Range | Use Case |
+|------|-------------|----------|
+| RATING | 1-10 | Satisfaction scores |
+| YES_NO | 0-1 | Binary choices |
+| MULTI_CHOICE | 1-N | Feature preferences |
+| NUMERIC | Custom | Age, quantity inputs |
+| SENTIMENT | 1-5 | Opinion scales |
 
-## ⚠️ Important Notes
+## Security Considerations
 
-1. **Answer Range Validation**: All answers must be within specified min-max ranges
-2. **Single Submission**: Each address can only submit once per survey
-3. **Decryption Delay**: Gateway callbacks may take several minutes
-4. **Gas Costs**: Multi-question surveys have higher gas fees
-5. **State Management**: Surveys must follow proper state transition flow
+- **No Individual Storage**: Responses contribute to aggregates only
+- **Single Submission**: `hasSubmitted` mapping prevents double-voting
+- **Access Control**: Owner, SurveyManager, DataAnalyst roles
+- **Deadline Enforcement**: Responses rejected after survey closes
 
-## 🤝 Contributing
+## Stack
 
-We welcome contributions! Please feel free to submit issues and pull requests.
+- **Blockchain**: Ethereum Sepolia + Zama fhEVM v0.9.1
+- **Smart Contracts**: Solidity 0.8.24, Hardhat
+- **Frontend**: React 18, TypeScript, Vite
+- **Web3**: wagmi, viem, RainbowKit
+- **Styling**: Tailwind CSS, shadcn/ui
 
-### Development Setup
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+## License
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **Zama**: For providing the FHE technology and fhEVM
-- **Ethereum Foundation**: For the blockchain infrastructure
-- **Open Source Community**: For the amazing tools and libraries
-
----
-
-Built with ❤️ using Zama FHE Technology
-
-**Author**: 0rangel-woodrown  
-**Repository**: https://github.com/0rangel-woodrown/AnonSurvey
+MIT
